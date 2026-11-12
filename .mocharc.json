@@ -1,0 +1,7 @@
+{
+  "require": ["tsx", "tsconfig-paths/register"],
+  "watch-files": ["src/**/*.ts", "test/**/*.js"],
+  "timeout": 10000,
+  "exit": true,
+  "recursive": true
+}
