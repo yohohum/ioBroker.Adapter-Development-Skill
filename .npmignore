@@ -1,0 +1,44 @@
+# Source files
+src/
+test/
+docs/
+
+# Development files
+.github/
+.vscode/
+.idea/
+*.log
+.gitignore
+.eslintignore
+.prettierignore
+
+# TypeScript
+tsconfig.json
+tsconfig.build.json
+*.ts
+!build/**/*.d.ts
+
+# Testing
+coverage/
+.nyc_output/
+.mocharc.json
+
+# Documentation
+CHANGELOG.md
+README.md
+LICENSE
+*.md
+
+# Scripts
+scripts/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env*
