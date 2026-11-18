@@ -1,0 +1,48 @@
+# Copy to .github/workflows/adapter-ci.yml in the adapter repository.
+# Adjust branches and Node.js matrix to package engines and supported js-controller versions.
+name: Adapter CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Current js-controller compatibility must be checked before changing this matrix.
+        node-version: ['22', '24', '26']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Package and schema tests
+        run: npm run test:package
+
+      - name: Integration tests against JS-Controller
+        run: npm run test:integration
+
+      - name: Repository checker
+        run: npx --yes @iobroker/repochecker

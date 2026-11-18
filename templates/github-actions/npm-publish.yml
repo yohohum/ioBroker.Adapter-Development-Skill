@@ -1,0 +1,90 @@
+# Copy to .github/workflows/npm-publish.yml in the adapter repository.
+# Configure the npm Trusted Publisher to match owner/repository/workflow filename.
+# If using a GitHub environment, configure the same environment name in npm.
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js for npm Trusted Publishing
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Ensure supported npm CLI
+        run: |
+          npm install --global npm@latest
+          node --version
+          node -e "const [major, minor] = process.versions.node.split('.').map(Number); if (major < 22 || (major === 22 && minor < 14)) throw new Error('npm Trusted Publishing requires Node.js 22.14.0 or newer');"
+          npm --version
+          node -e "const { execFileSync } = require('node:child_process'); const v = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim().split('.').map(Number); if (v[0] < 11 || (v[0] === 11 && v[1] < 5) || (v[0] === 11 && v[1] === 5 && v[2] < 1)) throw new Error('npm Trusted Publishing requires npm 11.5.1 or newer');"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Package/schema tests
+        run: npm run test:package
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      - name: Repository checker
+        run: npx --yes @iobroker/repochecker
+
+      - name: Verify tag and package versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const tag = process.env.RELEASE_TAG.replace(/^v/, '');
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const ioPkg = JSON.parse(fs.readFileSync('io-package.json', 'utf8'));
+          if (pkg.version !== tag) throw new Error(`Tag ${tag} does not match package.json ${pkg.version}`);
+          const baseVersion = pkg.version.match(/^\d+\.\d+\.\d+/)?.[0];
+          const prereleaseIoVersionAllowed = pkg.version.includes('-') && ioPkg.common?.version === baseVersion;
+          if (ioPkg.common?.version !== tag && !prereleaseIoVersionAllowed) {
+            throw new Error(`Tag ${tag} does not match io-package.json ${ioPkg.common?.version}`);
+          }
+          NODE
+
+      - name: Verify package contents
+        run: npm pack --dry-run
+
+      - name: Publish prerelease or stable release
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            npm publish --tag next
+          else
+            npm publish
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag

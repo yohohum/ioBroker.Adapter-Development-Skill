@@ -1,0 +1,23 @@
+name: Validate Skill repository
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Validate required files, JavaScript and local links
+        run: node scripts/validate-skill.mjs
+      - name: Validate shell syntax
+        run: bash -n scripts/run-adapter-checks.sh
