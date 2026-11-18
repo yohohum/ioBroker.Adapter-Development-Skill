@@ -48,7 +48,9 @@ npm run release patch -- --dry
 
 ## 4. Git tag и workflows
 
-Release script может создавать release commit/tag и push согласно своей конфигурации. GitHub Actions publish workflow должен слушать разрешённые semver tags (`vX.Y.Z` и только нужный prerelease pattern). Примеры — `templates/github-actions/npm-publish.yml`.
+Release script может создавать release commit/tag и push согласно своей конфигурации. GitHub Actions publish workflow должен слушать разрешённые semver tags (`vX.Y.Z` и только нужный prerelease pattern).
+
+Официальный шаблон `@iobroker/create-adapter` использует workflow `test-and-release.yml` с действием `ioBroker/testing-action-deploy` для публикации. Если адаптер создан этим шаблоном,following его конфигурации и не заменяй на ручной `npm-publish.yml` без обоснования. Примеры альтернативных workflow — `templates/github-actions/npm-publish.yml` (Trusted Publishing по тегам).
 
 CI для веток/PR и publish по тегам разделяй: публикация не должна срабатывать на произвольный push в main.
 

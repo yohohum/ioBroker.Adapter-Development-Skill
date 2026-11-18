@@ -30,7 +30,7 @@ Backend проверяет native config независимо от UI. Обра�
 
 ## 5. Переводы
 
-Запусти штатный `translate-adapter` команды в соответствии с выбранным UI и README `@iobroker/adapter-dev`. English и German — обязательные языки согласно актуальной документации ioBroker. Переводи UI labels, title/description и release news.
+Запусти штатный `translate-adapter` команды в соответствии с выбранным UI и README `@iobroker/adapter-dev`. Переводы необходимы на все поддерживаемые языки интерфейса (по текущим требованиям repochecker — все 11 языков, включая `titleLang`/`desc`/`news` в `io-package.json`). Английский и немецкий — минимум, а не полный перечень. Переводи UI labels, title/description и release news.
 
 ## Критерии завершения
 

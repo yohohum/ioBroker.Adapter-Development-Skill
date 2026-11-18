@@ -4,10 +4,16 @@
 
 [`@iobroker/repochecker`](https://github.com/ioBroker/ioBroker.repochecker) проверяет, можно ли добавить GitHub repository адаптера в публичный репозиторий ioBroker. Используй локальный CLI, а также автоматическую проверку при PR в `ioBroker.repositories`.
 
-Запускай из корня проекта:
+Запускай из корня проекта с указанием целевого репозитория или локального пути:
 
 ```bash
-npx --yes @iobroker/repochecker
+npx --yes @iobroker/repochecker --local .
+```
+
+Или для проверки公開ного репозитория по URL:
+
+```bash
+npx --yes @iobroker/repochecker https://github.com/<OWNER>/ioBroker.<adaptername>
 ```
 
 Если CLI в установленной версии требует дополнительные параметры, проверь `--help` и README именно этой версии. Не игнорируй severity и не меняй код ради отключения проверки.
@@ -39,7 +45,7 @@ npx --yes @iobroker/repochecker
 - каждый state должен иметь корректную роль;
 - должны быть указаны author/authors согласно текущим требованиям;
 - пакет должен быть опубликован в npm, а организация `iobroker` добавлена как owner;
-- новый адаптер должен иметь admin3 configuration dialog.
+- новый адаптер должен иметь конфигурационный диалог Admin (jsonConfig).
 
 Точные требования проверяй в README репозитория, так как они могут меняться.
 
@@ -89,4 +95,4 @@ STABLE — отдельный процесс после достаточного
 - `npm publish` выполняется в разрешённом Trusted Publisher workflow;
 - имя репозитория, имя файла workflow и GitHub environment (если используется) точно совпадают с настройкой Trusted Publisher в npm.
 
-Пример workflow — `templates/github-actions/npm-publish.yml`. Он использует Node.js 24; измени версию только после проверки актуальных требований npm и adapter engines.
+Пример workflow — `templates/github-actions/npm-publish.yml` (Trusted Publishing по тегам) или `test-and-release.yml` (официальный шаблон `@iobroker/create-adapter` с действием `ioBroker/testing-action-deploy`). Используй конфигурацию, соответствующую выбранному способу публикации. Версия Node.js — 24; измени только после проверки актуальных требований npm и adapter engines.

@@ -33,7 +33,7 @@ run_check "ESLint" npm run lint
 run_check "Package/schema tests" npm run test:package
 run_check "Controller integration tests" npm run test:integration
 run_check "Built entry-point and metadata preflight" node "$SCRIPT_DIR/adapter-preflight.mjs" "$ROOT" --check-main "${PREFLIGHT_ARGS[@]}"
-run_check "ioBroker repository checker" npx --yes @iobroker/repochecker
+run_check "ioBroker repository checker" npx --yes @iobroker/repochecker --local "$ROOT"
 
 if [[ "${WITH_NPM_AUDIT:-0}" == "1" ]]; then
     run_check "npm production dependency audit" npm audit --omit=dev

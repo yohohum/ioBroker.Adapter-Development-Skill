@@ -13,13 +13,32 @@ bash /path/to/skill/scripts/run-adapter-checks.sh .
 
 ## 2. Repochecker
 
-Запусти:
+Запусти из корня адаптера с указанием локального пути или URL репозитория:
 
 ```bash
-npx --yes @iobroker/repochecker
+npx --yes @iobroker/repochecker --local .
+```
+
+Или для проверки公開ного репозитория по URL:
+
+```bash
+npx --yes @iobroker/repochecker https://github.com/<OWNER>/ioBroker.<adaptername>
 ```
 
 Смотри полный output, устрани все блокирующие и значимые сообщения. При несовпадении с текущей документацией проверь changelog repochecker и schema; не подавляй правило локально.
+
+Обрати особое внимание на распространённые коды repochecker для новых адаптеров:
+
+- **E6012 / E6013** — инструкции по установке в README (раздел установки, npm/iBroker commands).
+- **W5042 / S5043** — префикс `node:` для встроенных модулей Node.js (например, `node:fs`, `node:path`).
+- **S5004 / S5005** — таймеры адаптера (корректное создание/очистка интервалов и таймаутов).
+- **Ограничение news** — не более 7 записей в разделе news `io-package.json`.
+- **E2004** — версии, упомянутые в news, должны существовать в npm registry.
+- **License** — раздел лицензии должен быть последним в `io-package.json`; год в копирайте должен быть актуальным; файл `CHANGELOG_OLD` не должен конфликтовать с `CHANGELOG.md`.
+- **RE-CHECK!** — используй формат `RE-CHECK!` (с восклицательным знаком) в коммитах для повторной проверки репочекером, а не `recheck`.
+- **Лимит GitHub API** — у репочекера есть лимит запросов к GitHub API; при массовых проверках делай паузы.
+
+Не игнорируй severity и не меняй код ради отключения проверки.
 
 ## 3. Object dump
 
@@ -51,7 +70,18 @@ npm pack --dry-run
 
 На поддерживаемой системе/устройстве проверь установку npm пакета или локального tarball, создание экземпляра, connect, read/write, reconnect, update и uninstall/cleanup.
 
-## 7. Критерии допуска
+## 7. Обязательный прогон перед добавлением в репозиторий
+
+Перед созданием PR в `ioBroker.repositories` или добавлением адаптера в latest/stable выполни полный прогон проверки на актуальность:
+
+1. Убедись, что все зависимости обновлены до актуальных совместимых версий.
+2. Запусти `npm ci`, `npm run build`, `npm run lint`, `npm run test:package`, `npm run test:integration`.
+3. Запусти `npx --yes @iobroker/repochecker --local .` и устрани все ошибки.
+4. Запусти онлайн-проверку [adapter-check.iobroker.in](https://adapter-check.iobroker.in/) и обработан все замечания.
+5. Убедись, что `io-package.json` и `package.json` версии синхронизированы.
+6. Убедись, что README на английском содержит инструкции по установке, описание устройства/производителя и changelog.
+
+## 8. Критерии допуска
 
 - [ ] Build/lint/package/integration прошли.
 - [ ] Repochecker прошёл или все оставшиеся warnings приняты с объяснением.
@@ -59,6 +89,6 @@ npm pack --dry-run
 - [ ] Online Adapter Checker запущен и замечания обработаны.
 - [ ] npm pack содержит только ожидаемые файлы.
 - [ ] README на английском заполнен, есть ссылка на устройство/производителя и changelog.
-- [ ] `io-package.json` содержит корректные типы, roles, authors, titles и Admin3 UI.
+- [ ] `io-package.json` содержит корректные типы, roles, authors, titles и конфигурационный диалог Admin (jsonConfig).
 - [ ] npm package доступен/готов к публикации и `iobroker` organisation owner добавлена согласно правилам repositories.
 - [ ] Непроверенные hardware сценарии обозначены.

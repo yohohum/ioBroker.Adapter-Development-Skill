@@ -50,14 +50,22 @@ const hasWip = changelogCandidates.some((name) => {
 });
 if (!hasWip) errors.push('No WORK IN PROGRESS changelog placeholder found in CHANGELOG.md or README.md.');
 
-const publishWorkflow = path.join(root, '.github/workflows/npm-publish.yml');
-if (!fs.existsSync(publishWorkflow)) {
-    warnings.push('.github/workflows/npm-publish.yml not found; verify the real npm publishing workflow and Trusted Publisher configuration.');
+const npmPublishWorkflow = path.join(root, '.github/workflows/npm-publish.yml');
+const testAndReleaseWorkflow = path.join(root, '.github/workflows/test-and-release.yml');
+const hasPublishWorkflow = fs.existsSync(npmPublishWorkflow) || fs.existsSync(testAndReleaseWorkflow);
+if (!hasPublishWorkflow) {
+    warnings.push('No npm publishing workflow found (.github/workflows/npm-publish.yml or .github/workflows/test-and-release.yml). Verify the real npm publishing workflow and Trusted Publisher configuration.');
 } else {
-    const content = fs.readFileSync(publishWorkflow, 'utf8');
-    if (!/id-token:\s*write/.test(content)) errors.push('Publish workflow must grant id-token: write for npm Trusted Publishing.');
-    if (!/npm publish/.test(content)) errors.push('Publish workflow does not contain npm publish. id-token permission alone does not publish a package.');
-    if (!/tags:/.test(content) || !/v\[0-9/.test(content)) warnings.push('Publish workflow tag trigger was not recognized; verify tag patterns manually.');
+    const workflowsToCheck = [npmPublishWorkflow, testAndReleaseWorkflow].filter((p) => fs.existsSync(p));
+    for (const wf of workflowsToCheck) {
+        const content = fs.readFileSync(wf, 'utf8');
+        if (/npm publish/.test(content) && !/id-token:\s*write/.test(content)) {
+            errors.push(`${path.basename(wf)}: contains npm publish but missing id-token: write permission for npm Trusted Publishing.`);
+        }
+        if (!/tags:/.test(content) || !/v\[0-9/.test(content)) {
+            warnings.push(`${path.basename(wf)}: tag trigger was not recognized; verify tag patterns manually.`);
+        }
+    }
 }
 
 const status = spawnSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });

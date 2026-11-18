@@ -81,6 +81,41 @@ if (pkg.files !== undefined && !Array.isArray(pkg.files)) {
 if (!fs.existsSync(path.join(root, 'README.md'))) warnings.push('README.md is missing; public adapter repository requirements expect a README in English.');
 if (!fs.existsSync(path.join(root, 'LICENSE'))) warnings.push('LICENSE file is missing.');
 
+// Translations: repochecker requires all supported interface languages (currently 11),
+// not only English and German. Check that io-package.json common has localized title/desc/news.
+const common = ioPkg.common ?? {};
+const localizedKeys = ['title', 'desc', 'news'];
+for (const key of localizedKeys) {
+    const value = common[key];
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const langs = Object.keys(value);
+        if (langs.length > 0 && !langs.includes('en')) {
+            warnings.push(`io-package.json common.${key} is missing English ("en") localization.`);
+        }
+        if (langs.length > 0 && langs.length < 2) {
+            warnings.push(`io-package.json common.${key} has only one language; repochecker typically requires all supported interface languages (currently 11), not only en/de.`);
+        }
+    }
+}
+
+// News entries limit: repochecker W56xx flags more than 7 news records.
+const news = common.news;
+if (news && typeof news === 'object' && !Array.isArray(news)) {
+    const newsCount = Object.keys(news).length;
+    if (newsCount > 7) {
+        warnings.push(`io-package.json common.news has ${newsCount} entries; repochecker limit is 7 news records.`);
+    }
+}
+
+// License section order: License should be the last section in io-package.json.
+const ioKeys = Object.keys(ioPkg);
+const licenseIdx = ioKeys.indexOf('license');
+const commonIdx = ioKeys.indexOf('common');
+const nativeIdx = ioKeys.indexOf('native');
+if (licenseIdx !== -1 && (commonIdx !== -1 && licenseIdx < commonIdx || nativeIdx !== -1 && licenseIdx < nativeIdx)) {
+    warnings.push('io-package.json "license" section should be the last top-level section according to repository requirements.');
+}
+
 printAndExit();
 
 function printAndExit() {

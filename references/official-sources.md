@@ -19,7 +19,7 @@
 |---|---|
 | [@iobroker/adapter-dev](https://github.com/ioBroker/adapter-dev) | `build-adapter`, `translate-adapter`, TypeScript/React сборка и переводы |
 | [@iobroker/dev-server](https://github.com/ioBroker/dev-server) | `setup`, `watch`, `run`, `debug`, `upload`, обновление локального Controller/Admin |
-| [Перевод адаптера](https://www.iobroker.com/docs/dev/adaptertranslate.md) | Файлы i18n; обязательные English и German; команды перевода |
+| [Перевод адаптера](https://www.iobroker.net/docs/dev/adaptertranslate.md) | Файлы i18n; переводы на все поддерживаемые языки интерфейса (по текущим требованиям repochecker — все 11 языков, включая `titleLang`/`desc`/`news`); команды перевода |
 
 ## Модель объектов и безопасность
 
