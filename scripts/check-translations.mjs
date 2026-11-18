@@ -4,7 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 
 const ROOT = process.argv[2] ?? '.';
-const MODE = process.argv.includes('--mode=new') ? 'new' : process.argv.includes('--mode=existing') ? 'existing' : 'auto';
+const MODE = process.argv.includes('--mode=new') ? 'new' : process.argv.includes('--mode=existing') ? 'existing' : 'new';
 const errors = [];
 const warnings = [];
 
@@ -13,14 +13,10 @@ const REQUIRED_LANGS = ['en', 'de', 'ru', 'pt', 'nl', 'fr', 'it', 'es', 'pl', 'u
 
 // --- Вспомогательные функции ---
 
-function readJson(file) {
-    try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
-    catch (e) { return null; }
-}
-
 function isEmpty(val) {
-    return val === undefined || val === null || (typeof val === 'string' && val.trim() === '') ||
-        (typeof val === 'object' && Object.keys(val).length === 0);
+    return val === undefined || val === null ||
+        (typeof val === 'string' && val.trim() === '') ||
+        (typeof val === 'object' && !Array.isArray(val) && Object.keys(val).length === 0);
 }
 
 function checkLocalizedObject(label, obj, pathPrefix) {
@@ -33,12 +29,63 @@ function checkLocalizedObject(label, obj, pathPrefix) {
     if (missing.length > 0) {
         errors.push(`${label}: ${pathPrefix}: отсутствуют переводы для языков: ${missing.join(', ')}`);
     }
+    // Сравниваем наборы ключей между языками — все языки должны иметь одинаковые ключи
+    if (langs.length > 0) {
+        const baseLang = langs[0];
+        const baseKeys = new Set(Object.keys(obj[baseLang] ?? {}));
+        for (const lang of REQUIRED_LANGS) {
+            if (!langs.includes(lang)) continue;
+            const langObj = obj[lang];
+            if (typeof langObj !== 'object' || Array.isArray(langObj)) continue;
+            const langKeys = new Set(Object.keys(langObj));
+            const missingKeys = [...baseKeys].filter(k => !langKeys.has(k));
+            if (missingKeys.length > 0) {
+                errors.push(`${label}: ${pathPrefix}[${lang}]: отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+            }
+            const extraKeys = [...langKeys].filter(k => !baseKeys.has(k));
+            if (extraKeys.length > 0) {
+                warnings.push(`${label}: ${pathPrefix}[${lang}]: лишние ключи перевода: ${extraKeys.join(', ')}`);
+            }
+        }
+    }
     for (const lang of REQUIRED_LANGS) {
         if (!langs.includes(lang)) continue;
         const val = obj[lang];
         if (isEmpty(val)) {
             errors.push(`${label}: ${pathPrefix}[${lang}]: пустой или отсутствующий перевод`);
         }
+    }
+}
+
+// --- JSON5 парсер (упрощённый, без внешних зависимостей) ---
+
+function parseJson5(text) {
+    if (!text || !text.trim()) return null;
+    try {
+        return JSON.parse(text);
+    } catch (_e) {
+        // Упрощённая предобработка JSON5: убрать комментарии и запятые перед закрывающими скобками
+        let cleaned = text
+            // Убрать однострочные комментарии // ...
+            .replace(/\/\/[^\n\r]*/g, '')
+            // Убрать многострочные комментарии /* ... */
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            // Убрать запятую перед закрывающей скобкой объекта или массива
+            .replace(/,\s*([\]}])/g, '$1');
+        try {
+            return JSON.parse(cleaned);
+        } catch (e2) {
+            return null;
+        }
+    }
+}
+
+function readJson(file) {
+    try {
+        const text = fs.readFileSync(file, 'utf8');
+        return parseJson5(text);
+    } catch (_e) {
+        return null;
     }
 }
 
@@ -52,26 +99,23 @@ function checkIoPackageLocalized() {
     }
     const ioPkg = readJson(ioPkgPath);
     if (!ioPkg) {
-        errors.push('io-package.json некорректный JSON');
+        errors.push('io-package.json некорректный JSON/JSON5');
         return;
     }
 
     const common = ioPkg.common ?? {};
 
-    // common.titleLang (обязательно локализованный объект, не строка title)
-    if (common.titleLang === undefined && common.title === undefined) {
-        errors.push('io-package.json: отсутствует common.titleLang (обязательно для нового адаптера)');
-    } else if (common.titleLang !== undefined) {
-        if (typeof common.titleLang !== 'object' || Array.isArray(common.titleLang)) {
-            errors.push('io-package.json: common.titleLang должен быть объектом локализаций');
-        } else {
-            checkLocalizedObject('io-package.json common.titleLang', common.titleLang, 'common.titleLang');
-        }
+    // common.titleLang — ОБЯЗАТЕЛЬНЫЙ объект локализаций.
+    // common.title не заменяет titleLang даже если содержит корректную строку.
+    if (common.titleLang === undefined) {
+        errors.push('io-package.json: отсутствует common.titleLang (обязательно для нового адаптера; common.title не является заменой)');
+    } else if (typeof common.titleLang !== 'object' || Array.isArray(common.titleLang)) {
+        errors.push('io-package.json: common.titleLang должен быть объектом локализаций');
     } else {
-        warnings.push('io-package.json: используется устарешее common.title вместо common.titleLang');
+        checkLocalizedObject('io-package.json common.titleLang', common.titleLang, 'common.titleLang');
     }
 
-    // common.desc (обязательно локализованный объект)
+    // common.desc — обязательный объект локализаций
     if (common.desc === undefined) {
         errors.push('io-package.json: отсутствует common.desc (обязательно для нового адаптера)');
     } else if (typeof common.desc !== 'object' || Array.isArray(common.desc)) {
@@ -80,7 +124,7 @@ function checkIoPackageLocalized() {
         checkLocalizedObject('io-package.json common.desc', common.desc, 'common.desc');
     }
 
-    // common.news (обязательно локализованный объект с записями по версиям)
+    // common.news — обязательный объект локализованных записей
     if (common.news === undefined) {
         if (MODE === 'new') {
             errors.push('io-package.json: отсутствует common.news (обязательно для нового адаптера)');
@@ -119,33 +163,23 @@ function checkJsonConfigI18n() {
     for (const p of jsonConfigPaths) {
         if (!fs.existsSync(p)) continue;
         found = true;
-        let config;
-        try {
-            if (p.endsWith('.json5')) {
-                // Простая проверка: JSON5 может содержать комментарии, но мы читаем как текст
-                const text = fs.readFileSync(p, 'utf8');
-                // Базовая проверка — не пустой файл
-                if (!text.trim()) {
-                    errors.push(`${p}: пустой файл jsonConfig`);
-                    continue;
-                }
-            } else {
-                config = readJson(p);
-                if (!config) {
-                    errors.push(`${p}: некорректный JSON`);
-                    continue;
-                }
-            }
-            // Проверяем локализуемые свойства в элементах конфигурации
-            if (config && typeof config === 'object' && !Array.isArray(config)) {
-                checkJsonConfigObjectLocalization(p, config);
-            }
-        } catch (e) {
-            errors.push(`${p}: ошибка чтения: ${e.message}`);
+        const config = readJson(p);
+        if (!config) {
+            errors.push(`${p}: некорректный JSON/JSON5`);
+            continue;
+        }
+        if (typeof config === 'object' && !Array.isArray(config)) {
+            checkJsonConfigObjectLocalization(p, config);
+        } else {
+            errors.push(`${p}: корень jsonConfig должен быть объектом`);
         }
     }
     if (!found) {
-        warnings.push('jsonConfig.json(5) не найден в admin/ — проверь, используется ли jsonConfig для Admin UI');
+        if (MODE === 'new') {
+            errors.push('jsonConfig.json(5) не найден в admin/ — обязателен для нового адаптера с jsonConfig UI');
+        } else {
+            warnings.push('jsonConfig.json(5) не найден в admin/ — проверь, используется ли jsonConfig для Admin UI');
+        }
     }
 }
 
@@ -161,7 +195,6 @@ function checkJsonConfigObjectLocalization(filePath, obj, parentPath = '') {
                 const val = obj[prop];
                 const fullPath = `${parentPath}${parentPath ? '.' : ''}${prop}`;
                 if (typeof val === 'string') {
-                    // Одноязычная строка — допустимо для существующих адаптеров, но для новых нужен объект
                     if (MODE === 'new') {
                         errors.push(`${filePath}: ${fullPath}: строка вместо объекта локализаций (требуется для нового адаптера)`);
                     } else {
@@ -172,15 +205,14 @@ function checkJsonConfigObjectLocalization(filePath, obj, parentPath = '') {
                 }
             }
         }
-        // Рекурсивно проверяем вложенные объекты (например, элементы вкладок, группы)
+        // Рекурсивно проверяем вложенные объекты и массивы
         for (const key of Object.keys(obj)) {
             if (JSON_CONFIG_LOCALIZABLE_PROPS.includes(key)) continue;
             const val = obj[key];
+            const fullPath = `${parentPath}${parentPath ? '.' : ''}${key}`;
             if (val && typeof val === 'object' && !Array.isArray(val)) {
-                const fullPath = `${parentPath}${parentPath ? '.' : ''}${key}`;
                 checkJsonConfigObjectLocalization(filePath, val, fullPath);
             } else if (Array.isArray(val)) {
-                const fullPath = `${parentPath}${parentPath ? '.' : ''}${key}`;
                 checkJsonConfigObjectLocalization(filePath, val, fullPath);
             }
         }
@@ -208,17 +240,38 @@ function checkReactI18n() {
         if (missing.length > 0) {
             errors.push(`React i18n (${dir}): отсутствуют переводы для языков: ${missing.join(', ')}`);
         }
-        // Проверяем валидность JSON файлов переводов
+        // Проверяем валидность JSON файлов переводов и наборы ключей
+        const langKeySets = new Map();
         for (const file of entries.filter(e => e.isFile() && e.name.endsWith('.json'))) {
             const filePath = path.join(dir, file.name);
             const content = readJson(filePath);
             if (!content) {
-                errors.push(`${filePath}: некорректный JSON`);
+                errors.push(`${filePath}: некорректный JSON/JSON5`);
+                continue;
+            }
+            const langName = file.name.replace(/\.json$/, '');
+            if (typeof content === 'object' && !Array.isArray(content)) {
+                langKeySets.set(langName, new Set(Object.keys(content)));
+            }
+        }
+        // Сравниваем наборы ключей между языками
+        if (langKeySets.size > 0) {
+            const baseLang = [...langKeySets.keys()][0];
+            const baseKeys = langKeySets.get(baseLang);
+            for (const [lang, keys] of langKeySets.entries()) {
+                const missingKeys = [...baseKeys].filter(k => !keys.has(k));
+                if (missingKeys.length > 0) {
+                    errors.push(`React i18n (${dir}): ${lang}: отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+                }
             }
         }
     }
     if (!found) {
-        warnings.push('React UI локали не найдены (src/locales/, admin/locales/ или src/i18n/) — проверь, используется ли React UI');
+        if (MODE === 'new') {
+            warnings.push('React UI локали не найдены (src/locales/, admin/locales/ или src/i18n/) — проверь, используется ли React UI');
+        } else {
+            warnings.push('React UI локали не найдены — проверь, используется ли React UI');
+        }
     }
 }
 
@@ -227,7 +280,7 @@ function checkReactI18n() {
 function checkHtmlAdminI18n() {
     const i18nDir = path.join(ROOT, 'admin', 'i18n');
     if (!fs.existsSync(i18nDir)) {
-        // Не ошибка — HTML UI может не использоваться
+        // HTML UI может не использоваться — не ошибка
         return;
     }
     const entries = fs.readdirSync(i18nDir, { withFileTypes: true });
@@ -236,11 +289,28 @@ function checkHtmlAdminI18n() {
     if (missing.length > 0) {
         errors.push(`HTML Admin UI i18n (admin/i18n/): отсутствуют переводы для языков: ${missing.join(', ')}`);
     }
+    // Проверяем валидность JSON и наборы ключей
+    const langKeySets = new Map();
     for (const file of entries.filter(e => e.isFile() && e.name.endsWith('.json'))) {
         const filePath = path.join(i18nDir, file.name);
         const content = readJson(filePath);
         if (!content) {
-            errors.push(`${filePath}: некорректный JSON`);
+            errors.push(`${filePath}: некорректный JSON/JSON5`);
+            continue;
+        }
+        const langName = file.name.replace(/\.json$/, '');
+        if (typeof content === 'object' && !Array.isArray(content)) {
+            langKeySets.set(langName, new Set(Object.keys(content)));
+        }
+    }
+    if (langKeySets.size > 0) {
+        const baseLang = [...langKeySets.keys()][0];
+        const baseKeys = langKeySets.get(baseLang);
+        for (const [lang, keys] of langKeySets.entries()) {
+            const missingKeys = [...baseKeys].filter(k => !keys.has(k));
+            if (missingKeys.length > 0) {
+                errors.push(`HTML Admin UI i18n (admin/i18n/): ${lang}: отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+            }
         }
     }
 }
@@ -251,7 +321,8 @@ function detectAdminUI() {
     const jsonConfigExists = fs.existsSync(path.join(ROOT, 'admin', 'jsonConfig.json')) ||
         fs.existsSync(path.join(ROOT, 'admin', 'jsonConfig.json5'));
     const reactSrcExists = fs.existsSync(path.join(ROOT, 'src')) &&
-        (fs.existsSync(path.join(ROOT, 'src', 'locales')) || fs.readdirSync(path.join(ROOT, 'src'), { withFileTypes: true }).some(e => e.isDirectory() && e.name === 'locales'));
+        (fs.existsSync(path.join(ROOT, 'src', 'locales')) ||
+            fs.readdirSync(path.join(ROOT, 'src'), { withFileTypes: true }).some(e => e.isDirectory() && e.name === 'locales'));
     const htmlI18nExists = fs.existsSync(path.join(ROOT, 'admin', 'i18n'));
     return { jsonConfigExists, reactSrcExists, htmlI18nExists };
 }

@@ -96,28 +96,32 @@ if (profile === 'custom-approved') {
 }
 
 // --- Проверка workflow публикации ---
-const npmPublishWorkflow = path.join(root, '.github/workflows/npm-publish.yml');
 const testAndReleaseWorkflow = path.join(root, '.github/workflows/test-and-release.yml');
-const hasPublishWorkflow = fs.existsSync(npmPublishWorkflow) || fs.existsSync(testAndReleaseWorkflow);
-if (!hasPublishWorkflow) {
-    if (profile === 'create-adapter-default' || profile === null) {
-        errors.push('No publishing workflow found (.github/workflows/test-and-release.yml или .github/workflows/npm-publish.yml).');
-    } else {
-        reviewNeeded.push('No publishing workflow found; verify custom release process.');
+const npmPublishWorkflow = path.join(root, '.github/workflows/npm-publish.yml');
+
+// Для create-adapter-default требуется только test-and-release.yml (официальный шаблон)
+// Для custom-approved допустим либо test-and-release.yml, либо npm-publish.yml
+if (profile === 'create-adapter-default' || profile === null) {
+    if (!fs.existsSync(testAndReleaseWorkflow)) {
+        errors.push('No publishing workflow found: .github/workflows/test-and-release.yml (обязателен для профиля create-adapter-default).');
     }
-} else {
-    const workflowsToCheck = [npmPublishWorkflow, testAndReleaseWorkflow].filter((p) => fs.existsSync(p));
-    for (const wf of workflowsToCheck) {
-        const content = fs.readFileSync(wf, 'utf8');
-        if (/npm publish/.test(content) && !/id-token:\s*write/.test(content)) {
-            errors.push(`${path.basename(wf)}: contains npm publish but missing id-token: write permission for npm Trusted Publishing.`);
-        }
-        if (!/tags:/.test(content) || !/v\[0-9/.test(content)) {
-            warnings.push(`${path.basename(wf)}: tag trigger was not recognized; verify tag patterns manually.`);
-        }
-        if (/ioBroker\/testing-action-deploy/.test(content) && /npm publish/.test(content)) {
-            warnings.push(`${path.basename(wf)}: содержит и testing-action-deploy, и прямой npm publish — выберите один механизм публикации.`);
-        }
+} else if (profile === 'custom-approved') {
+    if (!fs.existsSync(testAndReleaseWorkflow) && !fs.existsSync(npmPublishWorkflow)) {
+        reviewNeeded.push('No publishing workflow found (.github/workflows/test-and-release.yml или .github/workflows/npm-publish.yml); verify custom release process.');
+    }
+}
+
+const workflowsToCheck = [testAndReleaseWorkflow, npmPublishWorkflow].filter((p) => fs.existsSync(p));
+for (const wf of workflowsToCheck) {
+    const content = fs.readFileSync(wf, 'utf8');
+    if (/npm publish/.test(content) && !/id-token:\s*write/.test(content)) {
+        errors.push(`${path.basename(wf)}: contains npm publish but missing id-token: write permission for npm Trusted Publishing.`);
+    }
+    if (!/tags:/.test(content) || !/v\[0-9/.test(content)) {
+        warnings.push(`${path.basename(wf)}: tag trigger was not recognized; verify tag patterns manually.`);
+    }
+    if (/ioBroker\/testing-action-deploy/.test(content) && /npm publish/.test(content)) {
+        warnings.push(`${path.basename(wf)}: содержит и testing-action-deploy, и прямой npm publish — выберите один механизм публикации.`);
     }
 }
 

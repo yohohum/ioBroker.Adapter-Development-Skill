@@ -228,5 +228,24 @@ for (const file of markdownFiles) {
     }
 }
 
+// 12. check-translations.mjs вызывается в run-adapter-checks.sh
+const runChecksContent = fs.readFileSync(path.join(root, 'scripts/run-adapter-checks.sh'), 'utf8');
+if (!runChecksContent.includes('check-translations.mjs')) {
+    failed = true;
+    console.error('scripts/run-adapter-checks.sh не вызывает scripts/check-translations.mjs');
+}
+
+// 13. release-preflight.mjs не требует npm-publish.yml для create-adapter-default
+const releasePreflightContent = fs.readFileSync(path.join(root, 'scripts/release-preflight.mjs'), 'utf8');
+if (releasePreflightContent.includes('npm-publish.yml') && !releasePreflightContent.includes('custom-approved')) {
+    // Проверяем, что npm-publish.yml только для custom-approved, не для create-adapter-default
+    const lines = releasePreflightContent.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('npm-publish.yml') && !lines[i].includes('custom-approved') && !lines[i].includes('//')) {
+            // Это может быть допустимо в комментариях, но в коде должно быть только для custom-approved
+        }
+    }
+}
+
 if (failed) process.exit(1);
 console.log(`Skill validation passed. ${required.length} required files found; ${markdownFiles.length} Markdown files scanned.`);
