@@ -10,7 +10,7 @@
 | [@iobroker/adapter-core](https://github.com/ioBroker/adapter-core) | Базовый класс адаптера и runtime API | Проверяйте сигнатуры и совместимость с заявленными js-controller |
 | [@iobroker/types](https://www.npmjs.com/package/@iobroker/types) | TypeScript declarations | Пакет не включается автоматически только по имени; подключите через `compilerOptions.types` или `import '@iobroker/types'` |
 | [ioBroker.js-controller](https://github.com/ioBroker/ioBroker.js-controller) | Контроллер, runtime, совместимость Node.js | Совместимость проверяйте по разделу Compatibility соответствующего релиза |
-| [Adapter development docs](https://www.iobroker.com/docs/dev/adapterdev.md) | Полный процесс разработки | Используйте как общую документацию вместе со схемами и репозиториями инструментов |
+| [Adapter development docs](https://www.iobroker.net/#en/documentation/dev/adapterdev.md) | Полный процесс разработки | Используйте как общую документацию вместе со схемами и репозиториями инструментов |
 | [ioBroker.example](https://github.com/ioBroker/ioBroker.example) | Актуальные эталонные проекты | Не редактируйте/не копируйте generated examples вместо запуска create-adapter |
 
 ## Сборка, локальная среда и переводы
