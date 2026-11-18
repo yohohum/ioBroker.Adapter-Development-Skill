@@ -1,0 +1,60 @@
+# Copy to .github/workflows/test-and-release.yml in the adapter repository.
+# Публикация выполняется через ioBroker/testing-action-deploy@v1.
+# Настрой Trusted Publisher на npmjs.com для репозитория (owner/repository/workflow filename).
+# Если используешь GitHub environment, настрой то же имя environment в npm.
+name: Test and Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  test-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Package and schema tests
+        run: npm run test:package
+
+      - name: Integration tests against JS-Controller
+        run: npm run test:integration
+
+      - name: Repository checker
+        run: npx --yes @iobroker/repochecker --local .
+
+      - name: Publish prerelease or stable release
+        uses: ioBroker/testing-action-deploy@v1
+        with:
+          node-version: "22.x"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # npm-token НЕ указывается при Trusted Publishing
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag

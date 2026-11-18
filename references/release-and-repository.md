@@ -92,7 +92,7 @@ STABLE — отдельный процесс после достаточного
 - `permissions.id-token: write` включено;
 - `actions/setup-node` настроен с `registry-url: https://registry.npmjs.org`;
 - caching отключён в publish workflow, как рекомендует npm;
-- `npm publish` выполняется в разрешённом Trusted Publisher workflow;
-- имя репозитория, имя файла workflow и GitHub environment (если используется) точно совпадают с настройкой Trusted Publisher в npm.
+- публикация выполняется через `ioBroker/testing-action-deploy@v1` (Trusted Publishing, без `npm-token`);
+- имя репозитория, имя файла workflow (`test-and-release.yml`) и GitHub environment (если используется) точно совпадают с настройкой Trusted Publisher в npm.
 
-Пример workflow — `templates/github-actions/npm-publish.yml` (Trusted Publishing по тегам) или `test-and-release.yml` (официальный шаблон `@iobroker/create-adapter` с действием `ioBroker/testing-action-deploy`). Используй конфигурацию, соответствующую выбранному способу публикации. Версия Node.js — 24; измени только после проверки актуальных требований npm и adapter engines.
+Пример workflow — `templates/github-actions/test-and-release.yml` (официальный шаблон `@iobroker/create-adapter` с действием `ioBroker/testing-action-deploy`). Используй конфигурацию, соответствующую выбранному способу публикации. Версия Node.js — 22.x; измени только после проверки актуальных требований npm и adapter engines.

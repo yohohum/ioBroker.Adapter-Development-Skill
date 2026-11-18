@@ -48,26 +48,36 @@ npm run release patch -- --dry
 
 ## 4. Git tag и workflows
 
-Release script может создавать release commit/tag и push согласно своей конфигурации. GitHub Actions publish workflow должен слушать разрешённые semver tags (`vX.Y.Z` и только нужный prerelease pattern).
+Release script создаёт release commit/tag и push согласно своей конфигурации. Публикация выполняется через workflow `test-and-release.yml`, генерируемый `@iobroker/create-adapter`, который использует `ioBroker/testing-action-deploy@v1`.
 
-Официальный шаблон `@iobroker/create-adapter` использует workflow `test-and-release.yml` с действием `ioBroker/testing-action-deploy` для публикации. Если адаптер создан этим шаблоном,following его конфигурации и не заменяй на ручной `npm-publish.yml` без обоснования. Примеры альтернативных workflow — `templates/github-actions/npm-publish.yml` (Trusted Publishing по тегам).
+НЕ используй собственный `npm-publish.yml` или ручной `npm publish` в CI.
 
 CI для веток/PR и publish по тегам разделяй: публикация не должна срабатывать на произвольный push в main.
 
 ## 5. npm Trusted Publishing
 
-В npmjs.com настрой Trusted Publisher для конкретных:
+В npmjs.com настрой Trusted Publisher для репозитория:
 
-- owner/organization;
-- repository;
-- workflow filename;
-- environment (если workflow использует environment).
+1. owner/organization;
+2. repository;
+3. workflow filename (`test-and-release.yml`);
+4. environment (если workflow использует environment).
 
-В GitHub workflow нужны OIDC permissions и `npm publish`, не только `id-token: write`. Используй Node.js/npm требования из текущей документации npm. Пример шаблона намеренно отключает package cache для release build.
+В `test-and-release.yml` НЕ указывай `npm-token`:
+
+```yaml
+- uses: ioBroker/testing-action-deploy@v1
+  with:
+    node-version: "22.x"
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    # npm-token НЕ указывается при Trusted Publishing
+```
+
+Permissions workflow должны включать `id-token: write` и `contents: write`.
+
+NPM_TOKEN устарели (истекают через 90 дней) — используй только Trusted Publishing.
 
 Для prerelease тегов публикуй в `next`/другой явно выбранный dist-tag, чтобы случайно не переместить prerelease в `latest`. Для стабильной версии используй default `latest`, если это соответствует политике пакета.
-
-Не добавляй `NPM_TOKEN`, если используется Trusted Publishing. Не смешивай token auth и OIDC без явной необходимости.
 
 ## 6. GitHub Release
 

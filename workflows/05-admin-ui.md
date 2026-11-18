@@ -30,7 +30,15 @@ Backend проверяет native config независимо от UI. Обра�
 
 ## 5. Переводы
 
-Запусти штатный `translate-adapter` команды в соответствии с выбранным UI и README `@iobroker/adapter-dev`. Переводы необходимы на все поддерживаемые языки интерфейса (по текущим требованиям repochecker — все 11 языков, включая `titleLang`/`desc`/`news` в `io-package.json`). Английский и немецкий — минимум, а не полный перечень. Переводи UI labels, title/description и release news.
+Запусти штатный `translate-adapter` команды в соответствии с выбранным UI и README `@iobroker/adapter-dev`.
+
+Для НОВОГО адаптера, подаваемого в `ioBroker.repositories`, repochecker требует переводы на ВСЕ 11 языков (en, de, ru, pt, nl, fr, it, es, pl, uk, zh-cn):
+- `common.titleLang`, `common.desc`, `common.news` в `io-package.json`;
+- `admin/i18n/*/translations.json` (или jsonConfig i18n) для интерфейса Admin.
+
+Для СУЩЕСТВУЮЩИХ адаптеров при обновлении достаточно en + de.
+
+Команда `npm run translate` генерирует все языки автоматически. Не редактируй файлы переводов вручную — только `en/translations.json`.
 
 ## Критерии завершения
 

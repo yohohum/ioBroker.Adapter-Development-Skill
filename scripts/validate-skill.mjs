@@ -16,7 +16,7 @@ const required = [
     'scripts/adapter-preflight.mjs', 'scripts/check-object-dump.mjs', 'scripts/release-preflight.mjs',
     'scripts/run-adapter-checks.sh', 'scripts/validate-skill.mjs',
     'templates/adapter-tests/testPackageFiles.cjs', 'templates/adapter-tests/testAdapter.integration.cjs',
-    'templates/github-actions/adapter-ci.yml', 'templates/github-actions/npm-publish.yml',
+    'templates/github-actions/adapter-ci.yml', 'templates/github-actions/test-and-release.yml',
     'templates/release/releaseconfig.json',
     'templates/changelog/CHANGELOG.md', '.github/workflows/validate-skill.yml'
 ];
