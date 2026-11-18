@@ -44,6 +44,7 @@
 |---|---|
 | [@iobroker/testing](https://github.com/ioBroker/testing) | `tests.packageFiles`, `tests.integration`, тестовый harness |
 | [@iobroker/eslint-config](https://github.com/ioBroker/eslint-config) | Официальная конфигурация ESLint |
+| [State roles (STATE_ROLES.md)](https://github.com/ioBroker/ioBroker.docs/blob/master/docs/en/dev/stateroles.md) | Семантика и атрибуты ролей `common.role` для состояний адаптера |
 | [@iobroker/repochecker](https://github.com/ioBroker/ioBroker.repochecker) | Автоматическая проверка репозитория адаптера |
 | [OBJECTDUMP.md](https://github.com/ioBroker/ioBroker.repochecker/blob/master/OBJECTDUMP.md) | Создание и проверка дампа объектов |
 | [Adapter Checker](https://adapter-check.iobroker.in/) | Онлайн-проверка репозитория адаптера |
