@@ -65,11 +65,13 @@
     ├── adapter-tests/
     │   ├── testPackageFiles.cjs
     │   └── testAdapter.integration.cjs
-    ├── changelog/CHANGELOG.md
-    ├── release/releaseconfig.json
-    └── github-actions/
-        ├── adapter-ci.yml
-        └── test-and-release.yml
+├── changelog/
+│   ├── CHANGELOG_OLD.md
+│   └── README-changelog-section.md
+├── release/releaseconfig.json
+└── github-actions/
+    ├── adapter-ci.yml
+    └── test-and-release.yml
 ```
 
 ## Что проверяет Skill

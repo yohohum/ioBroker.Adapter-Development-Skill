@@ -66,11 +66,13 @@ Official ioBroker documentation and schemas are the single source of truth for A
     ├── adapter-tests/
     │   ├── testPackageFiles.cjs
     │   └── testAdapter.integration.cjs
-    ├── changelog/CHANGELOG.md
-    ├── release/releaseconfig.json
-    └── github-actions/
-        ├── adapter-ci.yml
-        └── test-and-release.yml
+    ├── changelog/
+│   │   ├── CHANGELOG_OLD.md
+│   │   └── README-changelog-section.md
+│   ├── release/releaseconfig.json
+│   └── github-actions/
+│       ├── adapter-ci.yml
+│       └── test-and-release.yml
 ```
 
 ## What the Skill checks

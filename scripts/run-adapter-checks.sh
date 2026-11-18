@@ -22,7 +22,13 @@ run_check() {
 if [[ -z "$ADAPTER_URL" ]]; then
     echo "Usage: $0 <GitHub-URL-adaptera> [adapter-root]" >&2
     echo "Example: $0 https://github.com/<OWNER>/ioBroker.<adaptername>" >&2
-    echo "Run repochecker with a real GitHub URL; local --mode is additional pre-check only." >&2
+    echo "URL обязателен для удалённой проверки repochecker." >&2
+    exit 2
+fi
+
+# Проверка корректности GitHub URL
+if [[ ! "$ADAPTER_URL" =~ ^https://github.com/[^/]+/[^/]+$ ]]; then
+    echo "ERROR: '$ADAPTER_URL' не является корректным GitHub URL (ожидается https://github.com/OWNER/REPO)" >&2
     exit 2
 fi
 
@@ -35,15 +41,19 @@ PREFLIGHT_ARGS=()
 if [[ "${ALLOW_IO_PACKAGE_NO_PRERELEASE:-0}" == "1" ]]; then
     PREFLIGHT_ARGS+=("--allow-io-package-no-prerelease")
 fi
+ENV_ARGS=()
+if [[ -f "$ROOT/.repochecker.env" ]]; then
+    ENV_ARGS+=("--env" "$ROOT/.repochecker.env")
+fi
+
 run_check "Adapter metadata preflight" node "$SCRIPT_DIR/adapter-preflight.mjs" "$ROOT" "${PREFLIGHT_ARGS[@]}"
 run_check "Build" npm run build
 run_check "ESLint" npm run lint
 run_check "Package/schema tests" npm run test:package
 run_check "Controller integration tests" npm run test:integration
 run_check "Built entry-point and metadata preflight" node "$SCRIPT_DIR/adapter-preflight.mjs" "$ROOT" --check-main "${PREFLIGHT_ARGS[@]}"
-run_check "ioBroker repository checker (remote)" npx --yes @iobroker/repochecker@latest "$ADAPTER_URL"
-run_check "ioBroker repository checker (local pre-check)" npx --yes @iobroker/repochecker@latest --local "$ROOT"
 run_check "Проверка полноты переводов" node "$SCRIPT_DIR/check-translations.mjs" "$ROOT"
+run_check "ioBroker repository checker (remote)" npx --yes @iobroker/repochecker@latest "$ADAPTER_URL" "${ENV_ARGS[@]}"
 
 if [[ "${WITH_NPM_AUDIT:-0}" == "1" ]]; then
     run_check "npm production dependency audit" npm audit --omit=dev

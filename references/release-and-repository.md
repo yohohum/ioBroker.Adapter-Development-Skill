@@ -10,7 +10,13 @@
 npx --yes @iobroker/repochecker@latest https://github.com/<OWNER>/ioBroker.<adaptername>
 ```
 
-Для дополнительной локальной предварительной проверки можно использовать `--local .`, но это не заменяет удалённый запуск и проверку в ioBroker.repositories.
+Для дополнительной локальной предварительной проверки с URL и env-файлом:
+
+```bash
+npx --yes @iobroker/repochecker@latest https://github.com/<OWNER>/ioBroker.<adaptername> --local --env .repochecker.env
+```
+
+Не используй `--local` с пустым или локальным путём вместо URL. Local mode не заменяет удалённый запуск и проверку в ioBroker.repositories.
 
 ## 2. OBJECTDUMP
 
