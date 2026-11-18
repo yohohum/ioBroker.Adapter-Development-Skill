@@ -21,7 +21,7 @@
 
    ```bash
    npm ci
-   bash /path/to/skill/scripts/run-adapter-checks.sh .
+   bash /path/to/skill/scripts/run-adapter-checks.sh https://github.com/<OWNER>/ioBroker.<adaptername>
    ```
 
    Этот скрипт предполагает наличие `npm`-скриптов `build`, `lint`, `test:package`, `test:integration` и доступ к npm Registry для запуска repochecker.
@@ -69,7 +69,7 @@
     ├── release/releaseconfig.json
     └── github-actions/
         ├── adapter-ci.yml
-        └── npm-publish.yml
+        └── test-and-release.yml
 ```
 
 ## Что проверяет Skill

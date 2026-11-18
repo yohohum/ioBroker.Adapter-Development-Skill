@@ -21,7 +21,7 @@ Official ioBroker documentation and schemas are the single source of truth for A
 
    ```bash
    npm ci
-   bash /path/to/skill/scripts/run-adapter-checks.sh .
+   bash /path/to/skill/scripts/run-adapter-checks.sh https://github.com/<OWNER>/ioBroker.<adaptername>
    ```
 
    This script assumes the presence of `npm` scripts `build`, `lint`, `test:package`, `test:integration` and access to the npm Registry for running repochecker.
@@ -70,7 +70,7 @@ Official ioBroker documentation and schemas are the single source of truth for A
     ├── release/releaseconfig.json
     └── github-actions/
         ├── adapter-ci.yml
-        └── npm-publish.yml
+        └── test-and-release.yml
 ```
 
 ## What the Skill checks

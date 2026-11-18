@@ -6,37 +6,37 @@
 
 ```bash
 npm ci
-bash /path/to/skill/scripts/run-adapter-checks.sh .
+bash /path/to/skill/scripts/run-adapter-checks.sh https://github.com/<OWNER>/ioBroker.<adaptername>
 ```
 
 Скрипт выполняет `build`, `lint`, `test:package`, `test:integration`, preflight и repochecker. Не пропускай ошибку. Если названия npm scripts отличаются, обнови scripts проекта и/или аргументированно адаптируй gate.
 
 ## 2. Repochecker
 
-Запусти из корня адаптера с указанием локального пути или URL репозитория:
+Запусти с указанием URL GitHub-репозитория адаптера:
 
 ```bash
-npx --yes @iobroker/repochecker --local .
+npx --yes @iobroker/repochecker@latest https://github.com/<OWNER>/ioBroker.<adaptername>
 ```
 
-Или для проверки公開ного репозитория по URL:
-
-```bash
-npx --yes @iobroker/repochecker https://github.com/<OWNER>/ioBroker.<adaptername>
-```
-
-Смотри полный output, устрани все блокирующие и значимые сообщения. При несовпадении с текущей документацией проверь changelog repochecker и schema; не подавляй правило локально.
+Для дополнительной локальной предварительной проверки можно использовать `--local .`, но это не заменяет удалённый запуск и проверку в ioBroker.repositories.
 
 Обрати особое внимание на распространённые коды repochecker для новых адаптеров:
 
-- **E6012 / E6013** — инструкции по установке в README (раздел установки, npm/iBroker commands).
-- **W5042 / S5043** — префикс `node:` для встроенных модулей Node.js (например, `node:fs`, `node:path`).
-- **S5004 / S5005** — таймеры адаптера (корректное создание/очистка интервалов и таймаутов).
-- **Ограничение news** — не более 7 записей в разделе news `io-package.json`.
-- **E2004** — версии, упомянутые в news, должны существовать в npm registry.
-- **License** — раздел лицензии должен быть последним в `io-package.json`; год в копирайте должен быть актуальным; файл `CHANGELOG_OLD` не должен конфликтовать с `CHANGELOG.md`.
-- **RE-CHECK!** — используй формат `RE-CHECK!` (с восклицательным знаком) в коммитах для повторной проверки репочекером, а не `recheck`.
-- **Лимит GitHub API** — у репочекера есть лимит запросов к GitHub API; при массовых проверках делай паузы.
+- **E6012 / E6013** — отсутствие или некорректность инструкций по установке адаптера в README. Репочекер проверяет, что в README есть раздел установки с корректными командами (через npm, iBroker Admin или стандартный процесс). Прямые ссылки на скачивание ZIP или ручную установку через `npm install <github-url>` могут быть помечены как ошибка, если не соответствуют формальным требованиям репозитория. Обычное описание установки через интерфейс Admin (создание экземпляра адаптера) допустимо.
+- **W5042** — отсутствие runtime-зависимости в `dependencies` (модуль импортируется в коде, но не указан в `dependencies` package.json).
+- **S5043** — рекомендация использовать префикс `node:` для встроенных модулей Node.js (например, `node:fs`, `node:path` вместо `fs`, `path`). Это suggestion, не error, но рекомендуется к соблюдению.
+- **S5004 / S5005 / W5004 / W5005** — таймеры адаптера. Используй `adapter.setInterval()` и `adapter.setTimeout()` вместо обычных `setInterval`/`setTimeout`, чтобы контроллер мог корректно очистить таймеры при остановке адаптера. Всегда вызывай `clearInterval()`/`clearTimeout()` в обработчике `unload`/`stop`. Обрабатывай асинхронные операции в циклах опроса, предотвращай наложение параллельных запросов.
+- **common.news** — не более 7 записей в разделе `common.news` `io-package.json`. Каждая запись — локализованный объект с ключом версии (например, `"1.0.0": { "en": "...", "de": "..." }`). Убедись, что версии в news существуют в npm registry.
+- **E2004 → W2004** — правило о том, что версии в news должны существовать в npm, понижено с Error до Warning. Тем не менее, следите за актуальностью версий в news.
+- **License** — раздел `## License` должен быть последним основным разделом `README.md` (не в `io-package.json`). Проверь наличие файла LICENSE, актуальность года copyright, указание автора и согласованность с полем `license` в `package.json`/`io-package.json`.
+- **CHANGELOG и CHANGELOG_OLD** — актуальная схема хранит changelog в разделе `WORK IN PROGRESS` `README.md`. Старые записи архивируются в `CHANGELOG_OLD.md`. Отдельный файл `CHANGELOG.md` не требуется и может быть удалён.
+- **RE-CHECK!** — отправляется отдельным комментарием в Pull Request в `ioBroker.repositories`, а не в Git-коммите. Последовательность: 1) внести исправления; 2) отправить коммиты; 3) оставить комментарий `RE-CHECK!` в PR; 4) дождаться повторного workflow; 5) проверить итоговый результат.
+- **GitHub API rate limit** — у repochecker есть лимит запросов к GitHub API. Используй `--env .repochecker.env` с переменной `GITHUB_TOKEN` для аутентификации. Пример `.repochecker.env`:
+  ```
+  GITHUB_TOKEN=ghp_...
+  ```
+  Добавь `.repochecker.env` в `.gitignore`. Не допускай попадания токена в Git, логи и отчёты.
 
 Не игнорируй severity и не меняй код ради отключения проверки.
 
@@ -76,7 +76,7 @@ npm pack --dry-run
 
 1. Убедись, что все зависимости обновлены до актуальных совместимых версий.
 2. Запусти `npm ci`, `npm run build`, `npm run lint`, `npm run test:package`, `npm run test:integration`.
-3. Запусти `npx --yes @iobroker/repochecker --local .` и устрани все ошибки.
+3. Запусти `npx --yes @iobroker/repochecker@latest https://github.com/<OWNER>/ioBroker.<adaptername>` и устрани все ошибки.
 4. Запусти онлайн-проверку [adapter-check.iobroker.in](https://adapter-check.iobroker.in/) и обработан все замечания.
 5. Убедись, что `io-package.json` и `package.json` версии синхронизированы.
 6. Убедись, что README на английском содержит инструкции по установке, описание устройства/производителя и changelog.

@@ -45,7 +45,7 @@ jobs:
         run: npm run test:integration
 
       - name: Repository checker
-        run: npx --yes @iobroker/repochecker --local .
+        run: npx --yes @iobroker/repochecker@latest https://github.com/${{ github.repository }}
 
       - name: Publish prerelease or stable release
         uses: ioBroker/testing-action-deploy@v1

@@ -13,12 +13,12 @@ const required = [
     'workflows/01-discovery.md', 'workflows/02-scaffolding.md', 'workflows/03-architecture.md',
     'workflows/04-implementation.md', 'workflows/05-admin-ui.md', 'workflows/06-debugging.md',
     'workflows/07-testing.md', 'workflows/08-release-gate.md', 'workflows/09-release.md',
-    'scripts/adapter-preflight.mjs', 'scripts/check-object-dump.mjs', 'scripts/release-preflight.mjs',
+    'scripts/adapter-preflight.mjs', 'scripts/check-object-dump.mjs', 'scripts/check-translations.mjs', 'scripts/release-preflight.mjs',
     'scripts/run-adapter-checks.sh', 'scripts/validate-skill.mjs',
     'templates/adapter-tests/testPackageFiles.cjs', 'templates/adapter-tests/testAdapter.integration.cjs',
     'templates/github-actions/adapter-ci.yml', 'templates/github-actions/test-and-release.yml',
     'templates/release/releaseconfig.json',
-    'templates/changelog/CHANGELOG.md', '.github/workflows/validate-skill.yml'
+    '.github/workflows/validate-skill.yml'
 ];
 const missing = required.filter((relative) => !fs.existsSync(path.join(root, relative)));
 if (missing.length) {
@@ -34,7 +34,7 @@ if (!frontmatter.startsWith('---') || !/\nname:\s*iobroker-adapter-development\n
 
 const nodeFiles = [
     'scripts/adapter-preflight.mjs', 'scripts/check-object-dump.mjs',
-    'scripts/release-preflight.mjs', 'scripts/validate-skill.mjs',
+    'scripts/check-translations.mjs', 'scripts/release-preflight.mjs', 'scripts/validate-skill.mjs',
     'templates/adapter-tests/testPackageFiles.cjs',
     'templates/adapter-tests/testAdapter.integration.cjs'
 ];

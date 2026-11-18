@@ -34,11 +34,13 @@ Backend проверяет native config независимо от UI. Обра�
 
 Для НОВОГО адаптера, подаваемого в `ioBroker.repositories`, repochecker требует переводы на ВСЕ 11 языков (en, de, ru, pt, nl, fr, it, es, pl, uk, zh-cn):
 - `common.titleLang`, `common.desc`, `common.news` в `io-package.json`;
-- `admin/i18n/*/translations.json` (или jsonConfig i18n) для интерфейса Admin.
+- переводы Admin UI: для jsonConfig — локали внутри `admin/jsonConfig.json(5)` (поля `label`, `desc` с объектом языков); для React — файлы локалей в `src/locales/` или как указано в шаблоне create-adapter.
 
 Для СУЩЕСТВУЮЩИХ адаптеров при обновлении достаточно en + de.
 
-Команда `npm run translate` генерирует все языки автоматически. Не редактируй файлы переводов вручную — только `en/translations.json`.
+Команда `npm run translate` генерирует все языки автоматически. Не редактируй файлы переводов вручную — только исходный en JSON.
+
+Не используй устаревший путь `admin/i18n/*/translations.json` как универсальный — структура переводов зависит от выбранного типа Admin UI (jsonConfig или React).
 
 ## Критерии завершения
 

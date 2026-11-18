@@ -6,7 +6,11 @@
 
 ## 2. Changelog
 
-Поддерживай `WORK IN PROGRESS` вручную в `CHANGELOG.md` или `README.md` согласно конфигурации release-script. Записи должны быть понятны пользователю и описывать значимые изменения. Не рассчитывай, что release-script автоматически напишет содержательный changelog по Git commits.
+Поддерживай раздел **WORK IN PROGRESS** в начале `README.md` (см. шаблон `templates/changelog/README-changelog-section.md`). Записи должны быть понятны пользователю и описывать значимые изменения. Не рассчитывай, что release-script автоматически напишет содержательный changelog по Git commits.
+
+При подготовке релиза перенеси записи из WORK IN PROGRESS в `CHANGELOG_OLD.md` с указанием версии и даты, затем очисти раздел WORK IN PROGRESS для следующей версии.
+
+Не создавай отдельный `CHANGELOG.md` — актуальная схема хранит changelog в README, а старые записи архивируются в `CHANGELOG_OLD.md`.
 
 ## 3. Release Script
 

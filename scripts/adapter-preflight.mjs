@@ -107,13 +107,15 @@ if (news && typeof news === 'object' && !Array.isArray(news)) {
     }
 }
 
-// License section order: License should be the last section in io-package.json.
-const ioKeys = Object.keys(ioPkg);
-const licenseIdx = ioKeys.indexOf('license');
-const commonIdx = ioKeys.indexOf('common');
-const nativeIdx = ioKeys.indexOf('native');
-if (licenseIdx !== -1 && (commonIdx !== -1 && licenseIdx < commonIdx || nativeIdx !== -1 && licenseIdx < nativeIdx)) {
-    warnings.push('io-package.json "license" section should be the last top-level section according to repository requirements.');
+// License: раздел ## License должен быть последним в README (не в io-package.json).
+const readmePath = path.join(root, 'README.md');
+if (fs.existsSync(readmePath)) {
+    const readme = fs.readFileSync(readmePath, 'utf8');
+    const licenseIdx = readme.search(/^##\s+License\s*$/im);
+    const sectionsAfter = licenseIdx !== -1 ? readme.slice(licenseIdx).match(/^##\s+/gm) : null;
+    if (licenseIdx !== -1 && sectionsAfter && sectionsAfter.length > 1) {
+        warnings.push('README.md: раздел ## License должен быть последним основным разделом.');
+    }
 }
 
 printAndExit();

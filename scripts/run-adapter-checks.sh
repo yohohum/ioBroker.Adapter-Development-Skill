@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT="$(cd "${1:-.}" && pwd)"
+ADAPTER_URL="${1:-}"
+ROOT="$(cd "${2:-.}" && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAILURES=0
 
@@ -18,6 +19,13 @@ run_check() {
     fi
 }
 
+if [[ -z "$ADAPTER_URL" ]]; then
+    echo "Usage: $0 <GitHub-URL-adaptera> [adapter-root]" >&2
+    echo "Example: $0 https://github.com/<OWNER>/ioBroker.<adaptername>" >&2
+    echo "Run repochecker with a real GitHub URL; local --mode is additional pre-check only." >&2
+    exit 2
+fi
+
 if [[ ! -f "$ROOT/package.json" || ! -f "$ROOT/io-package.json" ]]; then
     echo "Run this script from an ioBroker adapter project root (package.json and io-package.json required)." >&2
     exit 2
@@ -33,7 +41,9 @@ run_check "ESLint" npm run lint
 run_check "Package/schema tests" npm run test:package
 run_check "Controller integration tests" npm run test:integration
 run_check "Built entry-point and metadata preflight" node "$SCRIPT_DIR/adapter-preflight.mjs" "$ROOT" --check-main "${PREFLIGHT_ARGS[@]}"
-run_check "ioBroker repository checker" npx --yes @iobroker/repochecker --local "$ROOT"
+run_check "ioBroker repository checker (remote)" npx --yes @iobroker/repochecker@latest "$ADAPTER_URL"
+run_check "ioBroker repository checker (local pre-check)" npx --yes @iobroker/repochecker@latest --local "$ROOT"
+run_check "Проверка полноты переводов" node "$SCRIPT_DIR/check-translations.mjs" "$ROOT"
 
 if [[ "${WITH_NPM_AUDIT:-0}" == "1" ]]; then
     run_check "npm production dependency audit" npm audit --omit=dev

@@ -4,19 +4,13 @@
 
 [`@iobroker/repochecker`](https://github.com/ioBroker/ioBroker.repochecker) проверяет, можно ли добавить GitHub repository адаптера в публичный репозиторий ioBroker. Используй локальный CLI, а также автоматическую проверку при PR в `ioBroker.repositories`.
 
-Запускай из корня проекта с указанием целевого репозитория или локального пути:
+Запускай с указанием URL GitHub-репозитория адаптера:
 
 ```bash
-npx --yes @iobroker/repochecker --local .
+npx --yes @iobroker/repochecker@latest https://github.com/<OWNER>/ioBroker.<adaptername>
 ```
 
-Или для проверки公開ного репозитория по URL:
-
-```bash
-npx --yes @iobroker/repochecker https://github.com/<OWNER>/ioBroker.<adaptername>
-```
-
-Если CLI в установленной версии требует дополнительные параметры, проверь `--help` и README именно этой версии. Не игнорируй severity и не меняй код ради отключения проверки.
+Для дополнительной локальной предварительной проверки можно использовать `--local .`, но это не заменяет удалённый запуск и проверку в ioBroker.repositories.
 
 ## 2. OBJECTDUMP
 
