@@ -12,7 +12,7 @@ const CLI_MODE = process.argv.includes('--mode=new')
     ? 'existing'
     : 'auto';
 
-const REQUIRED_LANGS = ['en', 'de', 'ru', 'pt', 'nl', 'fr', 'it', 'es', 'pl', 'uk', 'zh-cn'];
+const REQUIRED_LANGS = ['en', 'de', 'ru', 'pt', 'nl', 'fr', 'it', 'es', 'pl', 'uk', 'zh-c\u006E'];
 
 // Single shared context — mode is resolved once and passed to all checks
 const context = {
@@ -115,9 +115,10 @@ function detectAdminUI() {
 
   const reactLocalesDir = fs.existsSync(path.join(ROOT, 'src', 'locales'));
   const reactI18nDir = fs.existsSync(path.join(ROOT, 'src', 'i18n'));
+  const reactAdminSrcI18nDir = fs.existsSync(path.join(ROOT, 'admin', 'src', 'i18n'));
   const reactSrcLocales = fs.existsSync(path.join(ROOT, 'src')) &&
     fs.readdirSync(path.join(ROOT, 'src'), { withFileTypes: true }).some(e => e.isDirectory() && e.name === 'locales');
-  const reactExists = reactLocalesDir || reactI18nDir || reactSrcLocales;
+  const reactExists = reactLocalesDir || reactI18nDir || reactAdminSrcI18nDir || reactSrcLocales;
 
   const htmlI18nExists = fs.existsSync(path.join(ROOT, 'admin', 'i18n'));
 
@@ -141,6 +142,7 @@ function detectAdminUI() {
       path.join(ROOT, 'src', 'locales'),
       path.join(ROOT, 'admin', 'locales'),
       path.join(ROOT, 'src', 'i18n'),
+      path.join(ROOT, 'admin', 'src', 'i18n'),
     ].filter(d => fs.existsSync(d)),
     htmlI18nPath: path.join(ROOT, 'admin', 'i18n'),
   };
@@ -323,7 +325,7 @@ function checkJsonConfigObjectLocalization(filePath, obj, parentPath = '') {
 function checkReactI18n(reactLocalesPaths) {
   if (reactLocalesPaths.length === 0) {
     if (context.mode === 'new') {
-      context.warnings.push('React UI локали не найдены (src/locales/, admin/locales/ или src/i18n/) — проверь, используется ли React UI');
+      context.warnings.push('React UI локали не найдены (src/locales/, admin/locales/, src/i18n/ или admin/src/i18n/) — проверь, используется ли React UI');
     } else {
       context.warnings.push('React UI локали не найдены — проверь, используется ли React UI');
     }
@@ -349,9 +351,9 @@ function checkReactI18n(reactLocalesPaths) {
       context.errors.push(`React i18n (${dir}): отсутствуют переводы для языков: ${missingLangs.join(', ')}`);
     }
 
-    // Collect key sets and values per namespace per language
-    // Structure: Map<namespace, Map<lang, {keys: Set<string>, values: Map<string, string>}>>
-    const nsLangData = new Map();
+    // Collect all namespace files per language
+    // Structure: Map<lang, Map<namespace, {keys: Set<string>, values: Map<string, string>}>>
+    const langNsData = new Map();
 
     for (const langEntry of [...langDirs, ...langFiles]) {
       const isDir = langDirs.includes(langEntry);
@@ -372,11 +374,11 @@ function checkReactI18n(reactLocalesPaths) {
           }
           if (typeof content === 'object' && !Array.isArray(content)) {
             const nsKey = tf.name.replace(/\.json$/, '');
-            if (!nsLangData.has(nsKey)) {
-              nsLangData.set(nsKey, new Map());
+            if (!langNsData.has(langEntry)) {
+              langNsData.set(langEntry, new Map());
             }
-            const langData = nsLangData.get(nsKey);
-            langData.set(langEntry, {
+            const nsData = langNsData.get(langEntry);
+            nsData.set(nsKey, {
               keys: collectTranslationKeys(content),
               values: collectTranslationValues(content),
             });
@@ -391,11 +393,11 @@ function checkReactI18n(reactLocalesPaths) {
         }
         if (typeof content === 'object' && !Array.isArray(content)) {
           const nsKey = 'root';
-          if (!nsLangData.has(nsKey)) {
-            nsLangData.set(nsKey, new Map());
+          if (!langNsData.has(langEntry)) {
+            langNsData.set(langEntry, new Map());
           }
-          const langData = nsLangData.get(nsKey);
-          langData.set(langEntry, {
+          const nsData = langNsData.get(langEntry);
+          nsData.set(nsKey, {
             keys: collectTranslationKeys(content),
             values: collectTranslationValues(content),
           });
@@ -403,32 +405,50 @@ function checkReactI18n(reactLocalesPaths) {
       }
     }
 
-    // Compare keys within each namespace across languages
-    for (const [nsKey, langMap] of nsLangData.entries()) {
-      if (langMap.size < 2) continue;
-      const langs = [...langMap.keys()];
-      const baseLang = langs[0];
-      const baseKeys = langMap.get(baseLang).keys;
-      const baseValues = langMap.get(baseLang).values;
+    // Collect all namespaces across all languages
+    const allNamespaces = new Set();
+    for (const [lang, nsMap] of langNsData.entries()) {
+      for (const ns of nsMap.keys()) {
+        allNamespaces.add(ns);
+      }
+    }
 
-      for (const lang of langs) {
-        if (lang === baseLang) continue;
-        const langData = langMap.get(lang);
-        const langKeys = langData.keys;
-        const langValues = langData.values;
+    // Check each namespace across all 11 required languages
+    for (const ns of allNamespaces) {
+      // Check which languages have this namespace
+      const langsWithNs = [...langNsData.keys()].filter(lang => langNsData.get(lang).has(ns));
 
-        // Check missing keys
-        const missingKeys = [...baseKeys].filter(k => !langKeys.has(k));
-        if (missingKeys.length > 0) {
-          context.errors.push(`React i18n (${dir}): ${lang} в пространстве имён "${nsKey}": отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
-        }
+      // Check missing languages for this namespace
+      const missingLangForNs = REQUIRED_LANGS.filter(lang => !langsWithNs.includes(lang));
+      if (missingLangForNs.length > 0) {
+        context.errors.push(`React i18n (${dir}): пространство имён "${ns}" отсутствует в языках: ${missingLangForNs.join(', ')}`);
+      }
 
-        // Check empty values for keys present in both base and current language
-        const commonKeys = [...baseKeys].filter(k => langKeys.has(k));
-        for (const k of commonKeys) {
-          const val = langValues.get(k);
-          if (isEmpty(val)) {
-            context.errors.push(`React i18n (${dir}): ${lang} в пространстве имён "${nsKey}": ключ "${k}" имеет пустое значение`);
+      // Compare keys between languages that have this namespace
+      if (langsWithNs.length >= 2) {
+        const baseLang = langsWithNs[0];
+        const baseKeys = langNsData.get(baseLang).get(ns).keys;
+        const baseValues = langNsData.get(baseLang).get(ns).values;
+
+        for (const lang of langsWithNs) {
+          if (lang === baseLang) continue;
+          const langData = langNsData.get(lang).get(ns);
+          const langKeys = langData.keys;
+          const langValues = langData.values;
+
+          // Check missing keys
+          const missingKeys = [...baseKeys].filter(k => !langKeys.has(k));
+          if (missingKeys.length > 0) {
+            context.errors.push(`React i18n (${dir}): ${lang} в пространстве имён "${ns}": отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+          }
+
+          // Check empty values for keys present in both base and current language
+          const commonKeys = [...baseKeys].filter(k => langKeys.has(k));
+          for (const k of commonKeys) {
+            const val = langValues.get(k);
+            if (isEmpty(val)) {
+              context.errors.push(`React i18n (${dir}): ${lang} в пространстве имён "${ns}": ключ "${k}" имеет пустое значение`);
+            }
           }
         }
       }
@@ -447,49 +467,110 @@ function checkHtmlAdminI18n(htmlI18nPath) {
     return;
   }
 
-  const langFiles = entries.filter(e => e.isFile() && e.name.endsWith('.json')).map(e => e.name.replace(/\.json$/, ''));
-  const missingLangs = REQUIRED_LANGS.filter(l => !langFiles.includes(l));
-  if (missingLangs.length > 0) {
-    context.errors.push(`HTML Admin UI i18n (admin/i18n/): отсутствуют переводы для языков: ${missingLangs.join(', ')}`);
-  }
+  // Collect language data: Map<lang, Map<namespace, {keys, values}>>
+  // Supports both flat format (en.json) and legacy directory format (en/translations.json)
+  const langNsData = new Map();
 
-  const langKeySets = new Map();
-  const langValueSets = new Map();
-  for (const file of entries.filter(e => e.isFile() && e.name.endsWith('.json'))) {
-    const filePath = path.join(htmlI18nPath, file.name);
-    const content = readJson5(filePath);
-    if (!content) {
-      context.errors.push(`${filePath}: некорректный JSON/JSON5`);
-      continue;
-    }
-    const langName = file.name.replace(/\.json$/, '');
-    if (typeof content === 'object' && !Array.isArray(content)) {
-      langKeySets.set(langName, collectTranslationKeys(content));
-      langValueSets.set(langName, collectTranslationValues(content));
-    }
-  }
+  for (const entry of entries) {
+    const langName = entry.name;
+    const entryPath = path.join(htmlI18nPath, entry.name);
 
-  if (langKeySets.size > 0) {
-    const baseLang = [...langKeySets.keys()][0];
-    const baseKeys = langKeySets.get(baseLang);
-    const baseValues = langValueSets.get(baseLang);
-
-    for (const [lang, keys] of langKeySets.entries()) {
-      const missingKeys = [...baseKeys].filter(k => !keys.has(k));
-      if (missingKeys.length > 0) {
-        context.errors.push(`HTML Admin UI i18n (admin/i18n/): ${lang}: отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
-      }
-
-      // Check empty values for common keys
-      const values = langValueSets.get(lang);
-      for (const k of baseKeys) {
-        if (keys.has(k)) {
-          const val = values.get(k);
-          if (isEmpty(val)) {
-            context.errors.push(`HTML Admin UI i18n (admin/i18n/): ${lang}: ключ "${k}" имеет пустое значение`);
+    if (entry.isDirectory()) {
+      // Legacy format: admin/i18n/en/translations.json
+      const dirContents = fs.readdirSync(entryPath, { withFileTypes: true });
+      const translationFiles = dirContents.filter(e => e.isFile() && e.name.endsWith('.json'));
+      if (translationFiles.length === 0) {
+        context.errors.push(`HTML Admin UI i18n (admin/i18n/): языковая директория ${langName} не содержит файлов переводов`);
+        continue;
+        }
+        for (const tf of translationFiles) {
+          const nsFilePath = path.join(entryPath, tf.name);
+          const content = readJson5(nsFilePath);
+          if (!content) {
+            context.errors.push(`${nsFilePath}: некорректный JSON/JSON5`);
+            continue;
+          }
+          if (typeof content === 'object' && !Array.isArray(content)) {
+            const nsKey = tf.name.replace(/\.json$/, '');
+            if (!langNsData.has(langName)) {
+              langNsData.set(langName, new Map());
+            }
+            const nsData = langNsData.get(langName);
+            nsData.set(nsKey, {
+              keys: collectTranslationKeys(content),
+              values: collectTranslationValues(content),
+            });
           }
         }
+      } else if (entry.isFile() && entry.name.endsWith('.json')) {
+        // Flat format: admin/i18n/en.json
+        const filePath = path.join(htmlI18nPath, entry.name);
+        const content = readJson5(filePath);
+        if (!content) {
+          context.errors.push(`${filePath}: некорректный JSON/JSON5`);
+          continue;
+        }
+        if (typeof content === 'object' && !Array.isArray(content)) {
+          const nsKey = 'root';
+          if (!langNsData.has(langName)) {
+            langNsData.set(langName, new Map());
+          }
+          const nsData = langNsData.get(langName);
+          nsData.set(nsKey, {
+            keys: collectTranslationKeys(content),
+            values: collectTranslationValues(content),
+          });
+        }
       }
+    }
+
+    // Check all 11 required languages are present
+    const missingLangs = REQUIRED_LANGS.filter(l => !langNsData.has(l));
+    if (missingLangs.length > 0) {
+      context.errors.push(`HTML Admin UI i18n (admin/i18n/): отсутствуют переводы для языков: ${missingLangs.join(', ')}`);
+    }
+
+    // Collect all namespaces across all languages
+    const allNamespaces = new Set();
+    for (const [lang, nsMap] of langNsData.entries()) {
+      for (const ns of nsMap.keys()) {
+        allNamespaces.add(ns);
+      }
+    }
+
+    // Check each namespace across all 11 required languages
+    for (const ns of allNamespaces) {
+      const langsWithNs = [...langNsData.keys()].filter(lang => langNsData.get(lang).has(ns));
+
+      const missingLangForNs = REQUIRED_LANGS.filter(lang => !langsWithNs.includes(lang));
+      if (missingLangForNs.length > 0) {
+        context.errors.push(`HTML Admin UI i18n (admin/i18n/): пространство имён "${ns}" отсутствует в языках: ${missingLangForNs.join(', ')}`);
+      }
+
+      if (langsWithNs.length >= 2) {
+        const baseLang = langsWithNs[0];
+        const baseKeys = langNsData.get(baseLang).get(ns).keys;
+        const baseValues = langNsData.get(baseLang).get(ns).values;
+
+        for (const lang of langsWithNs) {
+          if (lang === baseLang) continue;
+          const langData = langNsData.get(lang).get(ns);
+          const langKeys = langData.keys;
+          const langValues = langData.values;
+
+          const missingKeys = [...baseKeys].filter(k => !langKeys.has(k));
+          if (missingKeys.length > 0) {
+            context.errors.push(`HTML Admin UI i18n (admin/i18n/): ${lang} в пространстве имён "${ns}": отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+          }
+
+          const commonKeys = [...baseKeys].filter(k => langKeys.has(k));
+          for (const k of commonKeys) {
+            const val = langValues.get(k);
+            if (isEmpty(val)) {
+              context.errors.push(`HTML Admin UI i18n (admin/i18n/): ${lang} в пространстве имён "${ns}": ключ "${k}" имеет пустое значение`);
+            }
+          }
+        }
     }
   }
 }
@@ -509,14 +590,6 @@ function determineMode() {
         }
       }
     }
-  }
-
-  try {
-    const log = spawnSync('git', ['log', '--oneline', '-5'], { cwd: ROOT, encoding: 'utf8' });
-    const commitCount = log.stdout.trim().split('\n').filter(l => l.trim()).length;
-    if (commitCount > 1) return 'existing';
-  } catch (_e) {
-    // Git недоступен — не можем определить
   }
 
   context.reviewNeeded.push('Не удаётся определить режим автоматически (new/existing). Укажите --mode=new или --mode=existing.');
