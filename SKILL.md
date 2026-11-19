@@ -114,7 +114,7 @@ metadata:
 - reconnect/timeouts/stop/error-handling;
 - защищённая конфигурация и отсутствие секретов в логах;
 - Admin-конфигурация валидна по актуальной схеме;
-- переводы: для нового адаптера — на всех 11 языках (en, de, ru, pt, nl, fr, it, es, pl, uk, zh-cn), включая `common.titleLang`, `common.desc`, `common.news` в `io-package.json`; переводы Admin UI — через jsonConfig i18n (внутри jsonConfig.json/5) или React-локали в зависимости от выбранного UI; для обновления существующего — минимум en + de. Не редактируй файлы переводов вручную — только исходный en JSON;
+- переводы: для нового адаптера — на всех 11 языках (en, de, ru, pt, nl, fr, it, es, pl, uk, zh-cn), включая `common.titleLang`, `common.desc`, `common.news` в `io-package.json`; переводы Admin UI — через jsonConfig i18n (внутри jsonConfig.json/5) или React-локали в зависимости от выбранного UI; для обновления существующего — минимум en + de. Не редактируй файлы переводов вручную — только исходный en JSON. Проверка переводов выполняется через `scripts/check-translations.mjs` с режимом `--mode=new` для новых адаптеров и `--mode=existing` для существующих. React-only адаптер без jsonConfig не обязан иметь jsonConfig-файл, если его React-переводы полны;
 - успешные `build`, `lint`, `test:package`, `test:integration`;
 - успешный `@iobroker/repochecker`;
 - проверка `OBJECTDUMP` и онлайн Adapter Checker, если адаптер готовится к публичной приёмке;

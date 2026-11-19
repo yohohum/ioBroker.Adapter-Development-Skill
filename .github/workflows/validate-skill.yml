@@ -13,11 +13,26 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - name: Checkout source
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
         with:
           node-version: '24'
-      - name: Validate required files, JavaScript and local links
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate required files, JavaScript, YAML, JSON, and local links
         run: node scripts/validate-skill.mjs
+
       - name: Validate shell syntax
         run: bash -n scripts/run-adapter-checks.sh
+
+      - name: Run translation checks test fixtures
+        run: node scripts/check-translations.mjs test/fixtures/translations/full --mode=new
+
+      - name: Run release preflight test fixtures
+        run: node scripts/release-preflight.mjs test/fixtures/release/correct --profile=create-adapter-default

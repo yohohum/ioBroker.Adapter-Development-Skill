@@ -52,7 +52,7 @@ run_check "ESLint" npm run lint
 run_check "Package/schema tests" npm run test:package
 run_check "Controller integration tests" npm run test:integration
 run_check "Built entry-point and metadata preflight" node "$SCRIPT_DIR/adapter-preflight.mjs" "$ROOT" --check-main "${PREFLIGHT_ARGS[@]}"
-run_check "Проверка полноты переводов" node "$SCRIPT_DIR/check-translations.mjs" "$ROOT"
+run_check "Проверка полноты переводов" node "$SCRIPT_DIR/check-translations.mjs" "$ROOT" --mode=new
 run_check "ioBroker repository checker (remote)" npx --yes @iobroker/repochecker@latest "$ADAPTER_URL" "${ENV_ARGS[@]}"
 
 if [[ "${WITH_NPM_AUDIT:-0}" == "1" ]]; then

@@ -72,7 +72,12 @@ Official ioBroker documentation and schemas are the single source of truth for A
 │   ├── release/releaseconfig.json
 │   └── github-actions/
 │       ├── adapter-ci.yml
-│       └── test-and-release.yml
+│   └── test-and-release.yml
+├── test/
+│   ├── fixtures/
+│   │   ├── translations/
+│   │   └── release/
+│   └── run-regression-tests.mjs
 ```
 
 ## What the Skill checks

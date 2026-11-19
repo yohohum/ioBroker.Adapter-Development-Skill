@@ -1,0 +1,25 @@
+{
+  "name": "iob-skill",
+  "version": "1.0.0",
+  "description": "Полный GitHub Skill для ИИ-агентов, разрабатывающих адаптеры ioBroker: от анализа протокола и генерации каркаса до тестирования, проверки репозитория и релиза.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yohohum/ioBroker.Adapter-Development-Skill.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/yohohum/ioBroker.Adapter-Development-Skill/issues"
+  },
+  "homepage": "https://github.com/yohohum/ioBroker.Adapter-Development-Skill#readme",
+  "dependencies": {
+    "js-yaml": "^5.5.0",
+    "json5": "^2.2.3"
+  }
+}

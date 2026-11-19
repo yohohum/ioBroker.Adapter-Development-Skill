@@ -3,12 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
+import { load } from 'js-yaml';
+
+const VALID_PROFILES = ['create-adapter-default', 'custom-approved'];
 
 const args = process.argv.slice(2);
 const rootArg = args.find((arg) => !arg.startsWith('--')) ?? '.';
 const allowIoPackageNoPrerelease = args.includes('--allow-io-package-no-prerelease');
 const profileArg = args.find((arg) => arg.startsWith('--profile='));
 const profile = profileArg ? profileArg.slice('--profile='.length) : null;
+const skipGitCheck = args.includes('--no-git-check');
 const root = path.resolve(rootArg);
 const errors = [];
 const warnings = [];
@@ -18,11 +22,39 @@ function readJson(name) {
     try { return JSON.parse(fs.readFileSync(path.join(root, name), 'utf8')); }
     catch (error) { errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`); return undefined; }
 }
+function readYaml(filePath) {
+    try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        return load(content);
+    } catch (error) {
+        errors.push(`${filePath}: некорректный YAML: ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+    }
+}
+
 const pkg = readJson('package.json');
 const ioPkg = readJson('io-package.json');
 if (!pkg || !ioPkg) {
     finish();
     process.exit(1);
+}
+
+// --- Валидация профиля ---
+if (profile !== null && !VALID_PROFILES.includes(profile)) {
+    errors.push(`Неизвестный профиль: "${profile}". Допустимые значения: ${VALID_PROFILES.join(', ')}.`);
+    finish();
+    process.exitCode = 1;
+    process.exit(1);
+}
+
+// Если профиль не указан, определяем по наличию release-script
+if (profile === null) {
+    const devDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
+    if (devDeps['@alcalzone/release-script']) {
+        warnings.push('Профиль не указан, но обнаружен @alcalzone/release-script. Рекомендуется --profile=create-adapter-default.');
+    } else {
+        reviewNeeded.push('Профиль не указан. Укажите --profile=create-adapter-default или --profile=custom-approved.');
+    }
 }
 
 // --- Общие проверки (обязательны для любого профиля) ---
@@ -33,7 +65,7 @@ if (pkg.version !== ioPkg.common?.version) {
     if (!allowed) errors.push(`Version mismatch: package ${pkg.version}; io-package ${ioPkg.common?.version}.`);
 }
 
-// Changelog: WORK IN PROGRESS в README.md (актуальная схема хранит changelog в README)
+// Changelog: WORK IN PROGRESS в README.md
 const changelogCandidates = ['README.md'];
 const hasWip = changelogCandidates.some((name) => {
     const file = path.join(root, name);
@@ -47,13 +79,13 @@ if (!hasWip) {
     }
 }
 
-// Отдельный CHANGELOG.md не требуется; archivу в CHANGELOG_OLD.md допустимо
+// Отдельный CHANGELOG.md не требуется; архив в CHANGELOG_OLD.md допустимо
 const hasChangelogMd = fs.existsSync(path.join(root, 'CHANGELOG.md'));
 if (hasChangelogMd) {
     warnings.push('CHANGELOG.md найден; актуальная схема хранит changelog в README.md, старые записи — в CHANGELOG_OLD.md.');
 }
 
-// --- Профиль create-adapter-default: стандартный процесс generate + release-script ---
+// --- Профиль create-adapter-default ---
 if (profile === 'create-adapter-default' || profile === null) {
     const devDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
     if (!devDeps['@alcalzone/release-script']) {
@@ -79,9 +111,23 @@ if (profile === 'create-adapter-default' || profile === null) {
             errors.push(`Invalid .releaseconfig.json: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
+
+    // Проверка workflow публикации через YAML-парсер
+    const testAndReleasePath = path.join(root, '.github/workflows/test-and-release.yml');
+    if (!fs.existsSync(testAndReleasePath)) {
+        errors.push('No publishing workflow found: .github/workflows/test-and-release.yml (обязателен для профиля create-adapter-default).');
+    } else {
+        validatePublishWorkflow(testAndReleasePath, 'create-adapter-default');
+    }
+
+    // npm-publish.yml не должен быть альтернативой в default-профиле
+    const npmPublishPath = path.join(root, '.github/workflows/npm-publish.yml');
+    if (fs.existsSync(npmPublishPath)) {
+        errors.push('.github/workflows/npm-publish.yml не должен использоваться как альтернатива test-and-release.yml в профиле create-adapter-default.');
+    }
 }
 
-// --- Профиль custom-approved: требует явного выбора и документированного описания ---
+// --- Профиль custom-approved ---
 if (profile === 'custom-approved') {
     const hasCustomReleaseDoc = fs.existsSync(path.join(root, 'docs', 'RELEASE.md')) ||
         fs.existsSync(path.join(root, 'RELEASE.md')) ||
@@ -93,42 +139,159 @@ if (profile === 'custom-approved') {
     if (!pkg.version || !ioPkg.common?.version) {
         errors.push('Не удаётся проверить версию: отсутствует package.json version или io-package.json common.version.');
     }
-}
 
-// --- Проверка workflow публикации ---
-const testAndReleaseWorkflow = path.join(root, '.github/workflows/test-and-release.yml');
-const npmPublishWorkflow = path.join(root, '.github/workflows/npm-publish.yml');
-
-// Для create-adapter-default требуется только test-and-release.yml (официальный шаблон)
-// Для custom-approved допустим либо test-and-release.yml, либо npm-publish.yml
-if (profile === 'create-adapter-default' || profile === null) {
-    if (!fs.existsSync(testAndReleaseWorkflow)) {
-        errors.push('No publishing workflow found: .github/workflows/test-and-release.yml (обязателен для профиля create-adapter-default).');
-    }
-} else if (profile === 'custom-approved') {
-    if (!fs.existsSync(testAndReleaseWorkflow) && !fs.existsSync(npmPublishWorkflow)) {
-        reviewNeeded.push('No publishing workflow found (.github/workflows/test-and-release.yml или .github/workflows/npm-publish.yml); verify custom release process.');
+    // Проверка любого найденного workflow публикации
+    const testAndReleasePath = path.join(root, '.github/workflows/test-and-release.yml');
+    const npmPublishPath = path.join(root, '.github/workflows/npm-publish.yml');
+    const workflowsToCheck = [testAndReleasePath, npmPublishPath].filter(p => fs.existsSync(p));
+    if (workflowsToCheck.length === 0) {
+        reviewNeeded.push('No publishing workflow found; verify custom release process.');
+    } else {
+        for (const wf of workflowsToCheck) {
+            validatePublishWorkflow(wf, 'custom-approved');
+        }
     }
 }
 
-const workflowsToCheck = [testAndReleaseWorkflow, npmPublishWorkflow].filter((p) => fs.existsSync(p));
-for (const wf of workflowsToCheck) {
-    const content = fs.readFileSync(wf, 'utf8');
-    if (/npm publish/.test(content) && !/id-token:\s*write/.test(content)) {
-        errors.push(`${path.basename(wf)}: contains npm publish but missing id-token: write permission for npm Trusted Publishing.`);
+// --- Валидация структуры workflow публикации ---
+
+function validatePublishWorkflow(wfPath, profileName) {
+    const wf = readYaml(wfPath);
+    if (!wf) return;
+
+    // Проверяем наличие обязательных jobs
+    const requiredJobs = ['check-and-lint', 'adapter-tests', 'deploy'];
+    const jobs = wf.jobs || {};
+    for (const jobName of requiredJobs) {
+        if (!jobs[jobName]) {
+            errors.push(`${path.basename(wfPath)}: отсутствует обязательный job "${jobName}".`);
+        }
     }
-    if (!/tags:/.test(content) || !/v\[0-9/.test(content)) {
-        warnings.push(`${path.basename(wf)}: tag trigger was not recognized; verify tag patterns manually.`);
+
+    // Проверяем Actions и их inputs
+    if (jobs['check-and-lint']) {
+        checkActionInputs(jobs['check-and-lint'], 'ioBroker/testing-action-check', ['node-version'], wfPath);
     }
-    if (/ioBroker\/testing-action-deploy/.test(content) && /npm publish/.test(content)) {
-        warnings.push(`${path.basename(wf)}: содержит и testing-action-deploy, и прямой npm publish — выберите один механизм публикации.`);
+    if (jobs['adapter-tests']) {
+        checkActionInputs(jobs['adapter-tests'], 'ioBroker/testing-action-adapter', ['node-version', 'os'], wfPath);
+    }
+    if (jobs['deploy']) {
+        checkActionInputs(jobs['deploy'], 'ioBroker/testing-action-deploy', ['node-version', 'github-token'], wfPath);
+    }
+
+    // Проверяем матрицу Node.js
+    checkNodeMatrix(jobs, wfPath);
+
+    // Проверяем матрицу OS
+    checkOSMatrix(jobs, wfPath);
+
+    // Проверяем зависимости deploy
+    checkDeployNeeds(jobs, wfPath);
+
+    // Проверяем условия публикации (deploy только по тегам)
+    checkDeployCondition(jobs, wfPath);
+
+    // Проверяем отсутствие ручного npm publish
+    checkNoManualPublish(jobs, wfPath);
+}
+
+function checkActionInputs(job, expectedAction, requiredInputs, wfPath) {
+    const steps = job.steps || [];
+    for (const step of steps) {
+        if (step.uses && step.uses.startsWith(expectedAction)) {
+            const withInputs = step.with || {};
+            for (const input of requiredInputs) {
+                if (!(input in withInputs)) {
+                    errors.push(`${path.basename(wfPath)}: Action ${expectedAction} в job "${job.name || 'unnamed'}" не имеет обязательного параметра "${input}".`);
+                }
+            }
+            // Проверяем версию Action
+            const versionMatch = step.uses.match(/@v(\d+)/);
+            if (versionMatch) {
+                const majorVersion = parseInt(versionMatch[1], 10);
+                if (expectedAction === 'ioBroker/testing-action-check' && majorVersion < 2) {
+                    errors.push(`${path.basename(wfPath)}: ${expectedAction} должен быть @v2 или выше, найден ${step.uses}.`);
+                }
+            }
+        }
     }
 }
 
-const status = spawnSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
-if (status.error) warnings.push(`Could not inspect Git status: ${status.error.message}`);
-else if (status.status !== 0) warnings.push('git status failed; check repository state manually.');
-else if (status.stdout.trim()) errors.push('Git working tree is not clean. Commit or stash changes before release.');
+function checkNodeMatrix(jobs, wfPath) {
+    const requiredNodeVersions = ['22', '24', '26'];
+    for (const [jobName, job] of Object.entries(jobs)) {
+        const strategy = job.strategy || {};
+        const matrix = strategy.matrix || {};
+        // Проверяем только если у job есть матрица
+        if (!strategy.matrix) continue;
+        const nodeVersions = matrix['node-version'] || [];
+        if (Array.isArray(nodeVersions)) {
+            const missing = requiredNodeVersions.filter(v => !nodeVersions.includes(v));
+            if (missing.length > 0) {
+                errors.push(`${path.basename(wfPath)}: job "${jobName}": неполная матрица Node.js, отсутствуют версии: ${missing.join(', ')}.`);
+            }
+        }
+    }
+}
+
+function checkOSMatrix(jobs, wfPath) {
+    const requiredOS = ['ubuntu-latest', 'windows-latest', 'macos-latest'];
+    for (const [jobName, job] of Object.entries(jobs)) {
+        const strategy = job.strategy || {};
+        const matrix = strategy.matrix || {};
+        // Проверяем только если у job есть матрица
+        if (!strategy.matrix) continue;
+        const osList = matrix.os || [];
+        if (Array.isArray(osList)) {
+            const missing = requiredOS.filter(v => !osList.includes(v));
+            if (missing.length > 0) {
+                errors.push(`${path.basename(wfPath)}: job "${jobName}": неполная матрица OS, отсутствуют: ${missing.join(', ')}.`);
+            }
+        }
+    }
+}
+
+function checkDeployNeeds(jobs, wfPath) {
+    const deployJob = jobs['deploy'];
+    if (!deployJob) return;
+    const needs = deployJob.needs || [];
+    const needsArray = Array.isArray(needs) ? needs : [needs];
+    const requiredDeps = ['check-and-lint', 'adapter-tests'];
+    const missing = requiredDeps.filter(d => !needsArray.includes(d));
+    if (missing.length > 0) {
+        errors.push(`${path.basename(wfPath)}: job "deploy" не зависит от обязательных задач: ${missing.join(', ')}. Публикация не должна выполняться при ошибках тестирования.`);
+    }
+}
+
+function checkDeployCondition(jobs, wfPath) {
+    const deployJob = jobs['deploy'];
+    if (!deployJob) return;
+    const ifCondition = deployJob.if;
+    if (!ifCondition || !ifCondition.includes('refs/tags')) {
+        errors.push(`${path.basename(wfPath)}: job "deploy" не имеет условия запуска только по релизным тегам. Публикация должна выполняться только для тегов.`);
+    }
+}
+
+function checkNoManualPublish(jobs, wfPath) {
+    const steps = [];
+    for (const [jobName, job] of Object.entries(jobs)) {
+        if (job.steps) {
+            for (const step of job.steps) {
+                if (step.run && /npm publish/.test(step.run)) {
+                    errors.push(`${path.basename(wfPath)}: job "${jobName}" содержит прямой вызов "npm publish". Используйте ioBroker/testing-action-deploy@v1 вместо ручной публикации.`);
+                }
+            }
+        }
+    }
+}
+
+// --- Проверка git статуса ---
+if (!skipGitCheck) {
+    const status = spawnSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
+    if (status.error) warnings.push(`Could not inspect Git status: ${status.error.message}`);
+    else if (status.status !== 0) warnings.push('git status failed; check repository state manually.');
+    else if (status.stdout.trim()) errors.push('Git working tree is not clean. Commit or stash changes before release.');
+}
 
 finish();
 function finish() {

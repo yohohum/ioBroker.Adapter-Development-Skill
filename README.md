@@ -72,6 +72,11 @@
 └── github-actions/
     ├── adapter-ci.yml
     └── test-and-release.yml
+├── test/
+│   ├── fixtures/
+│   │   ├── translations/
+│   │   └── release/
+│   └── run-regression-tests.mjs
 ```
 
 ## Что проверяет Skill

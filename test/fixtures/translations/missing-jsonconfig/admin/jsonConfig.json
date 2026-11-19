@@ -1,0 +1,32 @@
+{
+  "tabs": [
+    {
+      "title": "Settings",
+      "label": {
+        "en": "Settings",
+        "de": "Einstellungen",
+        "ru": "Настройки",
+        "pt": "Configurações",
+        "nl": "Instellingen",
+        "fr": "Paramètres",
+        "it": "Impostazioni",
+        "es": "Configuración",
+        "pl": "Ustawienia",
+        "uk": "Налаштування"
+      },
+      "desc": {
+        "en": "Adapter settings",
+        "de": "Adaptereinstellungen",
+        "ru": "Настройки адаптера",
+        "pt": "Configurações do adaptador",
+        "nl": "Adapterinstellingen",
+        "fr": "Paramètres de l'adaptateur",
+        "it": "Impostazioni dell'adattatore",
+        "es": "Configuración del adaptador",
+        "pl": "Ustawienia adaptera",
+        "uk": "Налаштування адаптера"
+      },
+      "configItems": []
+    }
+  ]
+}

@@ -40,6 +40,11 @@ Backend проверяет native config независимо от UI. Обра�
 
 Команда `npm run translate` генерирует все языки автоматически. Не редактируй файлы переводов вручную — только исходный en JSON.
 
+Проверь полноту переводов скриптом `scripts/check-translations.mjs --mode=new` (для новых адаптеров) или `--mode=existing` (для существующих). Скрипт проверяет:
+- `common.titleLang`, `common.desc`, `common.news` в `io-package.json`;
+- локализованные поля jsonConfig (`label`, `desc`, `validatorErrorText`);
+- React-локали и HTML/JavaScript i18n с наборами ключей.
+
 Не используй устаревший путь `admin/i18n/*/translations.json` как универсальный — структура переводов зависит от выбранного типа Admin UI (jsonConfig или React).
 
 ## Критерии завершения

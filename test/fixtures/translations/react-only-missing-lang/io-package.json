@@ -1,0 +1,43 @@
+{
+  "common": {
+    "name": "test-adapter",
+    "titleLang": {
+      "en": "Test Adapter",
+      "de": "Test Adapter",
+      "ru": "Тестовый адаптер",
+      "pt": "Adaptador de Teste",
+      "nl": "Test Adapter",
+      "fr": "Adaptateur de Test",
+      "it": "Adattatore di Test",
+      "es": "Adaptador de Prueba",
+      "pl": "Adapter Testowy",
+      "uk": "Тестовий адаптер"
+    },
+    "desc": {
+      "en": "Test adapter description",
+      "de": "Testadapter-Beschreibung",
+      "ru": "Описание тестового адаптера",
+      "pt": "Descrição do adaptador de teste",
+      "nl": "Testadapter beschrijving",
+      "fr": "Description de l'adaptateur de test",
+      "it": "Descrizione dell'adattatore di test",
+      "es": "Descripción del adaptador de prueba",
+      "pl": "Opis adaptera testowego",
+      "uk": "Опис тестового адаптера"
+    },
+    "news": {
+      "1.0.0": {
+        "en": "Initial release",
+        "de": "Erste Veröffentlichung",
+        "ru": "Первый выпуск",
+        "pt": "Primeiro lançamento",
+        "nl": "Eerste release",
+        "fr": "Première version",
+        "it": "Prima versione",
+        "es": "Primera versión",
+        "pl": "Pierwsze wydanie",
+        "uk": "Перший реліз"
+      }
+    }
+  }
+}
