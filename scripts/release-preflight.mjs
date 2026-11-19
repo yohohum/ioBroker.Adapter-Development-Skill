@@ -219,35 +219,48 @@ function checkActionInputs(job, expectedAction, requiredInputs, wfPath) {
 
 function checkNodeMatrix(jobs, wfPath) {
     const requiredNodeVersions = ['22', '24', '26'];
-    for (const [jobName, job] of Object.entries(jobs)) {
-        const strategy = job.strategy || {};
-        const matrix = strategy.matrix || {};
-        // Проверяем только если у job есть матрица
-        if (!strategy.matrix) continue;
-        const nodeVersions = matrix['node-version'] || [];
-        if (Array.isArray(nodeVersions)) {
-            const missing = requiredNodeVersions.filter(v => !nodeVersions.includes(v));
-            if (missing.length > 0) {
-                errors.push(`${path.basename(wfPath)}: job "${jobName}": неполная матрица Node.js, отсутствуют версии: ${missing.join(', ')}.`);
-            }
-        }
+    // Матрица Node.js обязательна только для job adapter-tests
+    const job = jobs['adapter-tests'];
+    if (!job) {
+        errors.push(`${path.basename(wfPath)}: отсутствует job "adapter-tests" — обязателен для кросс-платформенного тестирования.`);
+        return;
+    }
+    const strategy = job.strategy || {};
+    if (!strategy || !strategy.matrix) {
+        errors.push(`${path.basename(wfPath)}: job "adapter-tests": отсутствует strategy.matrix — обязательна для тестирования на múltiples версиях Node.js.`);
+        return;
+    }
+    const matrix = strategy.matrix;
+    const nodeVersions = matrix['node-version'];
+    if (!Array.isArray(nodeVersions)) {
+        errors.push(`${path.basename(wfPath)}: job "adapter-tests": matrix['node-version'] должен быть массивом, получен: ${typeof nodeVersions}.`);
+        return;
+    }
+    const missing = requiredNodeVersions.filter(v => !nodeVersions.includes(v));
+    if (missing.length > 0) {
+        errors.push(`${path.basename(wfPath)}: job "adapter-tests": неполная матрица Node.js, отсутствуют версии: ${missing.join(', ')}.`);
     }
 }
 
 function checkOSMatrix(jobs, wfPath) {
     const requiredOS = ['ubuntu-latest', 'windows-latest', 'macos-latest'];
-    for (const [jobName, job] of Object.entries(jobs)) {
-        const strategy = job.strategy || {};
-        const matrix = strategy.matrix || {};
-        // Проверяем только если у job есть матрица
-        if (!strategy.matrix) continue;
-        const osList = matrix.os || [];
-        if (Array.isArray(osList)) {
-            const missing = requiredOS.filter(v => !osList.includes(v));
-            if (missing.length > 0) {
-                errors.push(`${path.basename(wfPath)}: job "${jobName}": неполная матрица OS, отсутствуют: ${missing.join(', ')}.`);
-            }
-        }
+    // Матрица OS обязательна только для job adapter-tests
+    const job = jobs['adapter-tests'];
+    if (!job) return;
+    const strategy = job.strategy || {};
+    if (!strategy || !strategy.matrix) {
+        errors.push(`${path.basename(wfPath)}: job "adapter-tests": отсутствует strategy.matrix — обязательна для тестирования на разных ОС.`);
+        return;
+    }
+    const matrix = strategy.matrix;
+    const osList = matrix.os;
+    if (!Array.isArray(osList)) {
+        errors.push(`${path.basename(wfPath)}: job "adapter-tests": matrix['os'] должен быть массивом, получен: ${typeof osList}.`);
+        return;
+    }
+    const missing = requiredOS.filter(v => !osList.includes(v));
+    if (missing.length > 0) {
+        errors.push(`${path.basename(wfPath)}: job "adapter-tests": неполная матрица OS, отсутствуют: ${missing.join(', ')}.`);
     }
 }
 

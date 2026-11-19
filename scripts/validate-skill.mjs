@@ -190,7 +190,10 @@ try {
     testReleaseYaml = null;
 }
 
-if (testReleaseYaml) {
+if (!testReleaseYaml) {
+    failed = true;
+    console.error('test-and-release.yml: не удалось распарсить YAML.');
+} else {
     const jobs = testReleaseYaml.jobs || {};
     const requiredJobs = ['check-and-lint', 'adapter-tests', 'deploy'];
     for (const job of requiredJobs) {
@@ -200,7 +203,7 @@ if (testReleaseYaml) {
         }
     }
 
-    // Проверяем зависимости deploy
+    // Проверяем зависимости deploy — fail-closed
     if (jobs['deploy']) {
         const needs = jobs['deploy'].needs || [];
         const needsArray = Array.isArray(needs) ? needs : [needs];
@@ -214,7 +217,7 @@ if (testReleaseYaml) {
         }
     }
 
-    // Проверяем Actions и их версии/inputs
+    // Проверяем Actions и их версии/inputs структурно
     function checkActionInJob(jobName, expectedAction, minMajorVersion, requiredInputs) {
         const job = jobs[jobName];
         if (!job) return;
@@ -250,23 +253,42 @@ if (testReleaseYaml) {
     checkActionInJob('adapter-tests', 'ioBroker/testing-action-adapter', 1, ['node-version', 'os']);
     checkActionInJob('deploy', 'ioBroker/testing-action-deploy', 1, ['node-version', 'github-token']);
 
-    // Проверяем матрицу Node.js и OS в adapter-tests
-    if (jobs['adapter-tests'] && jobs['adapter-tests'].strategy?.matrix) {
-        const matrix = jobs['adapter-tests'].strategy.matrix || {};
-        const nodeVersions = matrix['node-version'] || [];
-        const requiredNodeVersions = ['22', '24', '26'];
-        const missingNode = requiredNodeVersions.filter(v => !nodeVersions.includes(v));
-        if (missingNode.length > 0) {
+    // Проверяем матрицу Node.js — отсутствие матрицы — FAIL
+    if (jobs['adapter-tests']) {
+        const strategy = jobs['adapter-tests'].strategy;
+        if (!strategy || !strategy.matrix) {
             failed = true;
-            console.error(`test-and-release.yml: job "adapter-tests": неполная матрица Node.js, отсутствуют версии: ${missingNode.join(', ')}.`);
+            console.error('test-and-release.yml: job "adapter-tests" не имеет strategy.matrix — обязательна для тестирования на múltiples версиях.');
+        } else {
+            const matrix = strategy.matrix;
+            const nodeVersions = matrix['node-version'];
+            if (!Array.isArray(nodeVersions)) {
+                failed = true;
+                console.error(`test-and-release.yml: job "adapter-tests": matrix['node-version'] должен быть массивом, получен: ${typeof nodeVersions}.`);
+            } else {
+                const requiredNodeVersions = ['22', '24', '26'];
+                const missingNode = requiredNodeVersions.filter(v => !nodeVersions.includes(v));
+                if (missingNode.length > 0) {
+                    failed = true;
+                    console.error(`test-and-release.yml: job "adapter-tests": неполная матрица Node.js, отсутствуют версии: ${missingNode.join(', ')}.`);
+                }
+            }
+            const osList = matrix.os;
+            if (!Array.isArray(osList)) {
+                failed = true;
+                console.error(`test-and-release.yml: job "adapter-tests": matrix['os'] должен быть массивом, получен: ${typeof osList}.`);
+            } else {
+                const requiredOS = ['ubuntu-latest', 'windows-latest', 'macos-latest'];
+                const missingOS = requiredOS.filter(v => !osList.includes(v));
+                if (missingOS.length > 0) {
+                    failed = true;
+                    console.error(`test-and-release.yml: job "adapter-tests": неполная матрица OS, отсутствуют: ${missingOS.join(', ')}.`);
+                }
+            }
         }
-        const osList = matrix.os || [];
-        const requiredOS = ['ubuntu-latest', 'windows-latest', 'macos-latest'];
-        const missingOS = requiredOS.filter(v => !osList.includes(v));
-        if (missingOS.length > 0) {
-            failed = true;
-            console.error(`test-and-release.yml: job "adapter-tests": неполная матрица OS, отсутствуют: ${missingOS.join(', ')}.`);
-        }
+    } else {
+        failed = true;
+        console.error('test-and-release.yml: отсутствует job "adapter-tests" с матрицей тестирования.');
     }
 
     // Проверяем условия deploy (только по тегам)
@@ -288,9 +310,6 @@ if (testReleaseYaml) {
             }
         }
     }
-} else {
-    failed = true;
-    console.error('test-and-release.yml: не удалось распарсить YAML.');
 }
 
 // 10. SKILL.md не требует обязательных DEVELOPMENT_NOTES.md после каждого этапа

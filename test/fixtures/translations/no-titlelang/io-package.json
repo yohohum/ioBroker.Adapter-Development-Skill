@@ -1,6 +1,7 @@
 {
   "common": {
     "name": "test-adapter",
+    "title": "Test Adapter",
     "desc": {
       "en": "Test adapter description",
       "de": "Testadapter-Beschreibung",
@@ -13,22 +14,6 @@
       "pl": "Opis adaptera testowego",
       "uk": "Опис тестового адаптера",
       "zh-cn": "测试适配器描述"
-    },
-    "news": {
-      "1.0.0": {
-        "en": "Initial release",
-        "de": "Erste Veröffentlichung",
-        "ru": "Первый выпуск",
-        "pt": "Primeiro lançamento",
-        "nl": "Eerste release",
-        "fr": "Première version",
-        "it": "Prima versione",
-        "es": "Primera versión",
-        "pl": "Pierwsze wydanie",
-        "uk": "Перший реліз",
-        "zh-cn": "首个版本"
-      }
-    },
-    "title": "Test Adapter"
+    }
   }
 }

@@ -1,0 +1,11 @@
+{
+  "name": "iobroker.test-adapter",
+  "version": "1.0.0",
+  "scripts": {
+    "release": "release-script"
+  },
+  "devDependencies": {
+    "@alcalzone/release-script": "^1.0.0",
+    "@alcalzone/release-script-plugin-iobroker": "^1.0.0"
+  }
+}

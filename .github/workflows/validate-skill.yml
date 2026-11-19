@@ -25,14 +25,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate required files, JavaScript, YAML, JSON, and local links
-        run: node scripts/validate-skill.mjs
+      - name: Run full regression test suite
+        run: npm test
+
+      - name: Validate Skill repository structure and consistency
+        run: npm run validate
 
       - name: Validate shell syntax
         run: bash -n scripts/run-adapter-checks.sh
-
-      - name: Run translation checks test fixtures
-        run: node scripts/check-translations.mjs test/fixtures/translations/full --mode=new
-
-      - name: Run release preflight test fixtures
-        run: node scripts/release-preflight.mjs test/fixtures/release/correct --profile=create-adapter-default

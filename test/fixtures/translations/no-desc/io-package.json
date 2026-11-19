@@ -1,0 +1,18 @@
+{
+  "common": {
+    "name": "test-adapter",
+    "titleLang": {
+      "en": "Test Adapter",
+      "de": "Test Adapter",
+      "ru": "Тестовый адаптер",
+      "pt": "Adaptador de Teste",
+      "nl": "Test Adapter",
+      "fr": "Adaptateur de Test",
+      "it": "Adattatore di Test",
+      "es": "Adaptador de Prueba",
+      "pl": "Adapter Testowy",
+      "uk": "Тестовий адаптер",
+      "zh-cn": "测试适配器"
+    }
+  }
+}
