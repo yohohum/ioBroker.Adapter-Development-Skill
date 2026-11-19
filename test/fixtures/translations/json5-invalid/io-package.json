@@ -1,0 +1,9 @@
+{
+    common: {
+        name: 'test-adapter',
+        titleLang: {
+            en: 'Test Adapter'
+            de: 'Test Adapter'
+        }
+    }
+}

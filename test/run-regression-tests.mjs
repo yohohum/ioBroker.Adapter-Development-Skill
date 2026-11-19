@@ -165,6 +165,26 @@ test('16. Корректный существующий адаптер — PASS'
   assertExitCode(result, 0, 'Корректный существующий адаптер должен пройти в режиме existing');
 });
 
+// 17. Авто-режим: titleLang все языки, но нет news — FAIL
+test('17. Авто-режим: titleLang все языки, но нет news — FAIL', () => {
+  const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), requireFixture('translations/auto-new-without-news'), '--mode=auto']);
+  assertExitCode(result, 1, 'Авто-режим с titleLang все языки, но без news должен быть ошибкой');
+  assertContains(result.stdout + result.stderr, 'common.news', 'Сообщение должно упоминать common.news');
+});
+
+// 18. Существующий адаптер с разрешённым переходным состоянием (titleLang неполный) — PASS
+test('18. Существующий адаптер с переходным состоянием — PASS', () => {
+  const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), requireFixture('translations/existing-transitional'), '--mode=existing']);
+  assertExitCode(result, 0, 'Существующий адаптер с переходным состоянием должен пройти (только предупреждения)');
+});
+
+// 19. Авто-режим не может определить режим — NEEDS REVIEW (exit code 2)
+test('19. Авто-режим не может определить режим — NEEDS REVIEW', () => {
+  const autoUndeterminableDir = '/tmp/test-auto-undeterminable';
+  const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), autoUndeterminableDir, '--mode=auto']);
+  assertExitCode(result, 2, 'Авто-режим без возможности определить режим должен быть NEEDS REVIEW (exit 2)');
+});
+
 console.log('\n=== Регрессионные тесты release-preflight ===\n');
 
 // --- Тесты release-preflight ---

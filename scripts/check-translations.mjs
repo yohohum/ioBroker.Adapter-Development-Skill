@@ -17,6 +17,7 @@ const REQUIRED_LANGS = ['en', 'de', 'ru', 'pt', 'nl', 'fr', 'it', 'es', 'pl', 'u
 // Single shared context — mode is resolved once and passed to all checks
 const context = {
   mode: null,
+  modeAutoDetected: false,
   errors: [],
   warnings: [],
   reviewNeeded: [],
@@ -50,15 +51,24 @@ function readJson(file) {
   }
 }
 
-function checkLocalizedObject(label, obj, pathPrefix) {
+function checkLocalizedObject(label, obj, pathPrefix, mode) {
+  const isStrict = mode === 'new' && !context.modeAutoDetected;
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-    context.errors.push(`${label}: ${pathPrefix} должен быть объектом локализаций, а не ${typeof obj}`);
+    if (isStrict) {
+      context.errors.push(`${label}: ${pathPrefix} должен быть объектом локализаций, а не ${typeof obj}`);
+    } else {
+      context.warnings.push(`${label}: ${pathPrefix} должен быть объектом локализаций, а не ${typeof obj}`);
+    }
     return;
   }
   const langs = Object.keys(obj);
   const missing = REQUIRED_LANGS.filter(l => !langs.includes(l));
   if (missing.length > 0) {
-    context.errors.push(`${label}: ${pathPrefix}: отсутствуют переводы для языков: ${missing.join(', ')}`);
+    if (isStrict) {
+      context.errors.push(`${label}: ${pathPrefix}: отсутствуют переводы для языков: ${missing.join(', ')}`);
+    } else {
+      context.warnings.push(`${label}: ${pathPrefix}: отсутствуют переводы для языков: ${missing.join(', ')}`);
+    }
   }
   if (langs.length > 0) {
     const baseLang = langs[0];
@@ -73,7 +83,11 @@ function checkLocalizedObject(label, obj, pathPrefix) {
       const langKeys = new Set(Object.keys(langObj));
       const missingKeys = [...baseKeys].filter(k => !langKeys.has(k));
       if (missingKeys.length > 0) {
-        context.errors.push(`${label}: ${pathPrefix}[${lang}]: отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+        if (isStrict) {
+          context.errors.push(`${label}: ${pathPrefix}[${lang}]: отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+        } else {
+          context.warnings.push(`${label}: ${pathPrefix}[${lang}]: отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+        }
       }
       const extraKeys = [...langKeys].filter(k => !baseKeys.has(k));
       if (extraKeys.length > 0) {
@@ -85,7 +99,11 @@ function checkLocalizedObject(label, obj, pathPrefix) {
     if (!langs.includes(lang)) continue;
     const val = obj[lang];
     if (isEmpty(val)) {
-      context.errors.push(`${label}: ${pathPrefix}[${lang}]: пустой или отсутствующий перевод`);
+      if (isStrict) {
+        context.errors.push(`${label}: ${pathPrefix}[${lang}]: пустой или отсутствующий перевод`);
+      } else {
+        context.warnings.push(`${label}: ${pathPrefix}[${lang}]: пустой или отсутствующий перевод`);
+      }
     }
   }
 }
@@ -144,6 +162,22 @@ function collectTranslationKeys(obj, prefix = '') {
   return keys;
 }
 
+function collectTranslationValues(obj, prefix = '') {
+  const values = new Map();
+  if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+    for (const [key, val] of Object.entries(obj)) {
+      const fullKey = prefix ? `${prefix}.${key}` : key;
+      if (typeof val === 'string') {
+        values.set(fullKey, val);
+      } else if (typeof val === 'object' && !Array.isArray(val)) {
+        const nestedValues = collectTranslationValues(val, fullKey);
+        for (const [k, v] of nestedValues) values.set(k, v);
+      }
+    }
+  }
+  return values;
+}
+
 function checkIoPackageLocalized() {
   const ioPkgPath = path.join(ROOT, 'io-package.json');
   if (!fs.existsSync(ioPkgPath)) {
@@ -161,20 +195,36 @@ function checkIoPackageLocalized() {
   // common.titleLang — ОБЯЗАТЕЛЬНЫЙ объект локализаций.
   // common.title не заменяет titleLang даже если содержит корректную строку.
   if (common.titleLang === undefined) {
-    context.errors.push('io-package.json: отсутствует common.titleLang (обязательно для нового адаптера; common.title не является заменой)');
+    if (context.mode === 'new') {
+      context.errors.push('io-package.json: отсутствует common.titleLang (обязательно для нового адаптера; common.title не является заменой)');
+    } else {
+      context.warnings.push('io-package.json: отсутствует common.titleLang (рекомендуется для нового адаптера; common.title не является заменой)');
+    }
   } else if (typeof common.titleLang !== 'object' || Array.isArray(common.titleLang)) {
-    context.errors.push('io-package.json: common.titleLang должен быть объектом локализаций');
+    if (context.mode === 'new') {
+      context.errors.push('io-package.json: common.titleLang должен быть объектом локализаций');
+    } else {
+      context.warnings.push('io-package.json: common.titleLang должен быть объектом локализаций');
+    }
   } else {
-    checkLocalizedObject('io-package.json common.titleLang', common.titleLang, 'common.titleLang');
+    checkLocalizedObject('io-package.json common.titleLang', common.titleLang, 'common.titleLang', context.mode);
   }
 
   // common.desc — обязательный объект локализаций
   if (common.desc === undefined) {
-    context.errors.push('io-package.json: отсутствует common.desc (обязательно для нового адаптера)');
+    if (context.mode === 'new') {
+      context.errors.push('io-package.json: отсутствует common.desc (обязательно для нового адаптера)');
+    } else {
+      context.warnings.push('io-package.json: отсутствует common.desc (рекомендуется для нового адаптера)');
+    }
   } else if (typeof common.desc !== 'object' || Array.isArray(common.desc)) {
-    context.errors.push('io-package.json: common.desc должен быть объектом локализаций');
+    if (context.mode === 'new') {
+      context.errors.push('io-package.json: common.desc должен быть объектом локализаций');
+    } else {
+      context.warnings.push('io-package.json: common.desc должен быть объектом локализаций');
+    }
   } else {
-    checkLocalizedObject('io-package.json common.desc', common.desc, 'common.desc');
+    checkLocalizedObject('io-package.json common.desc', common.desc, 'common.desc', context.mode);
   }
 
   // common.news — обязательный объект локализованных записей
@@ -185,7 +235,11 @@ function checkIoPackageLocalized() {
       context.warnings.push('io-package.json: отсутствует common.news (рекомендуется для нового адаптера)');
     }
   } else if (typeof common.news !== 'object' || Array.isArray(common.news)) {
-    context.errors.push('io-package.json: common.news должен быть объектом локализованных записей');
+    if (context.mode === 'new') {
+      context.errors.push('io-package.json: common.news должен быть объектом локализованных записей');
+    } else {
+      context.warnings.push('io-package.json: common.news должен быть объектом локализованных записей');
+    }
   } else {
     const newsCount = Object.keys(common.news).length;
     if (newsCount > 7) {
@@ -194,10 +248,14 @@ function checkIoPackageLocalized() {
     for (const version of Object.keys(common.news)) {
       const versionNews = common.news[version];
       if (typeof versionNews !== 'object' || Array.isArray(versionNews)) {
-        context.errors.push(`io-package.json: common.news.${version} должен быть объектом локализаций`);
+        if (context.mode === 'new') {
+          context.errors.push(`io-package.json: common.news.${version} должен быть объектом локализаций`);
+        } else {
+          context.warnings.push(`io-package.json: common.news.${version} должен быть объектом локализаций`);
+        }
         continue;
       }
-      checkLocalizedObject(`io-package.json common.news.${version}`, versionNews, `common.news.${version}`);
+      checkLocalizedObject(`io-package.json common.news.${version}`, versionNews, `common.news.${version}`, context.mode);
     }
   }
 }
@@ -245,7 +303,7 @@ function checkJsonConfigObjectLocalization(filePath, obj, parentPath = '') {
             context.warnings.push(`${filePath}: ${fullPath}: строка вместо объекта локализаций`);
           }
         } else if (typeof val === 'object' && !Array.isArray(val)) {
-          checkLocalizedObject(`${filePath} jsonConfig`, val, fullPath);
+          checkLocalizedObject(`${filePath} jsonConfig`, val, fullPath, context.mode);
         }
       }
     }
@@ -291,54 +349,87 @@ function checkReactI18n(reactLocalesPaths) {
       context.errors.push(`React i18n (${dir}): отсутствуют переводы для языков: ${missingLangs.join(', ')}`);
     }
 
-    // Collect key sets for ALL language files/directories, not just first
-    const langKeySets = new Map();
+    // Collect key sets and values per namespace per language
+    // Structure: Map<namespace, Map<lang, {keys: Set<string>, values: Map<string, string>}>>
+    const nsLangData = new Map();
+
     for (const langEntry of [...langDirs, ...langFiles]) {
       const isDir = langDirs.includes(langEntry);
-      let filePath;
       if (isDir) {
-        const dirContents = fs.readdirSync(path.join(dir, langEntry), { withFileTypes: true });
+        const dirPath = path.join(dir, langEntry);
+        const dirContents = fs.readdirSync(dirPath, { withFileTypes: true });
         const translationFiles = dirContents.filter(e => e.isFile() && e.name.endsWith('.json'));
         if (translationFiles.length === 0) {
           context.errors.push(`React i18n (${dir}): языковая директория ${langEntry} не содержит файлов переводов`);
           continue;
         }
-        // Check ALL files in the language directory (all namespaces)
         for (const tf of translationFiles) {
-          const nsFilePath = path.join(dir, langEntry, tf.name);
+          const nsFilePath = path.join(dirPath, tf.name);
           const content = readJson5(nsFilePath);
           if (!content) {
             context.errors.push(`${nsFilePath}: некорректный JSON/JSON5`);
             continue;
           }
           if (typeof content === 'object' && !Array.isArray(content)) {
-            const nsKey = `${langEntry}::${tf.name.replace(/\.json$/, '')}`;
-            const existingKeys = langKeySets.get(nsKey) || new Set();
-            for (const k of collectTranslationKeys(content)) existingKeys.add(k);
-            langKeySets.set(nsKey, existingKeys);
+            const nsKey = tf.name.replace(/\.json$/, '');
+            if (!nsLangData.has(nsKey)) {
+              nsLangData.set(nsKey, new Map());
+            }
+            const langData = nsLangData.get(nsKey);
+            langData.set(langEntry, {
+              keys: collectTranslationKeys(content),
+              values: collectTranslationValues(content),
+            });
           }
         }
       } else {
-        filePath = path.join(dir, `${langEntry}.json`);
+        const filePath = path.join(dir, `${langEntry}.json`);
         const content = readJson5(filePath);
         if (!content) {
           context.errors.push(`${filePath}: некорректный JSON/JSON5`);
           continue;
         }
         if (typeof content === 'object' && !Array.isArray(content)) {
-          langKeySets.set(langEntry, collectTranslationKeys(content));
+          const nsKey = 'root';
+          if (!nsLangData.has(nsKey)) {
+            nsLangData.set(nsKey, new Map());
+          }
+          const langData = nsLangData.get(nsKey);
+          langData.set(langEntry, {
+            keys: collectTranslationKeys(content),
+            values: collectTranslationValues(content),
+          });
         }
       }
     }
 
-    // Compare key sets between languages for each namespace
-    if (langKeySets.size > 0) {
-      const baseLang = [...langKeySets.keys()][0];
-      const baseKeys = langKeySets.get(baseLang);
-      for (const [lang, keys] of langKeySets.entries()) {
-        const missingKeys = [...baseKeys].filter(k => !keys.has(k));
+    // Compare keys within each namespace across languages
+    for (const [nsKey, langMap] of nsLangData.entries()) {
+      if (langMap.size < 2) continue;
+      const langs = [...langMap.keys()];
+      const baseLang = langs[0];
+      const baseKeys = langMap.get(baseLang).keys;
+      const baseValues = langMap.get(baseLang).values;
+
+      for (const lang of langs) {
+        if (lang === baseLang) continue;
+        const langData = langMap.get(lang);
+        const langKeys = langData.keys;
+        const langValues = langData.values;
+
+        // Check missing keys
+        const missingKeys = [...baseKeys].filter(k => !langKeys.has(k));
         if (missingKeys.length > 0) {
-          context.errors.push(`React i18n (${dir}): ${lang}: отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+          context.errors.push(`React i18n (${dir}): ${lang} в пространстве имён "${nsKey}": отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+        }
+
+        // Check empty values for keys present in both base and current language
+        const commonKeys = [...baseKeys].filter(k => langKeys.has(k));
+        for (const k of commonKeys) {
+          const val = langValues.get(k);
+          if (isEmpty(val)) {
+            context.errors.push(`React i18n (${dir}): ${lang} в пространстве имён "${nsKey}": ключ "${k}" имеет пустое значение`);
+          }
         }
       }
     }
@@ -363,6 +454,7 @@ function checkHtmlAdminI18n(htmlI18nPath) {
   }
 
   const langKeySets = new Map();
+  const langValueSets = new Map();
   for (const file of entries.filter(e => e.isFile() && e.name.endsWith('.json'))) {
     const filePath = path.join(htmlI18nPath, file.name);
     const content = readJson5(filePath);
@@ -373,16 +465,30 @@ function checkHtmlAdminI18n(htmlI18nPath) {
     const langName = file.name.replace(/\.json$/, '');
     if (typeof content === 'object' && !Array.isArray(content)) {
       langKeySets.set(langName, collectTranslationKeys(content));
+      langValueSets.set(langName, collectTranslationValues(content));
     }
   }
 
   if (langKeySets.size > 0) {
     const baseLang = [...langKeySets.keys()][0];
     const baseKeys = langKeySets.get(baseLang);
+    const baseValues = langValueSets.get(baseLang);
+
     for (const [lang, keys] of langKeySets.entries()) {
       const missingKeys = [...baseKeys].filter(k => !keys.has(k));
       if (missingKeys.length > 0) {
         context.errors.push(`HTML Admin UI i18n (admin/i18n/): ${lang}: отсутствуют ключи перевода: ${missingKeys.join(', ')}`);
+      }
+
+      // Check empty values for common keys
+      const values = langValueSets.get(lang);
+      for (const k of baseKeys) {
+        if (keys.has(k)) {
+          const val = values.get(k);
+          if (isEmpty(val)) {
+            context.errors.push(`HTML Admin UI i18n (admin/i18n/): ${lang}: ключ "${k}" имеет пустое значение`);
+          }
+        }
       }
     }
   }
@@ -414,6 +520,7 @@ function determineMode() {
   }
 
   context.reviewNeeded.push('Не удаётся определить режим автоматически (new/existing). Укажите --mode=new или --mode=existing.');
+  context.modeAutoDetected = true;
   return 'new';
 }
 
