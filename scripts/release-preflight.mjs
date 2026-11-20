@@ -197,8 +197,10 @@ function validatePublishWorkflow(wfPath, profileName) {
 
 function checkActionInputs(job, expectedAction, requiredInputs, wfPath) {
     const steps = job.steps || [];
+    let actionFound = false;
     for (const step of steps) {
         if (step.uses && step.uses.startsWith(expectedAction)) {
+            actionFound = true;
             const withInputs = step.with || {};
             for (const input of requiredInputs) {
                 if (!(input in withInputs)) {
@@ -214,6 +216,9 @@ function checkActionInputs(job, expectedAction, requiredInputs, wfPath) {
                 }
             }
         }
+    }
+    if (!actionFound) {
+        errors.push(`${path.basename(wfPath)}: Action ${expectedAction} не найден в job "${job.name || 'unnamed'}". Это обязательное действие для публикации.`);
     }
 }
 
@@ -280,8 +285,24 @@ function checkDeployCondition(jobs, wfPath) {
     const deployJob = jobs['deploy'];
     if (!deployJob) return;
     const ifCondition = deployJob.if;
-    if (!ifCondition || !ifCondition.includes('refs/tags')) {
+    if (!ifCondition) {
+        errors.push(`${path.basename(wfPath)}: job "deploy" не имеет условия запуска. Публикация должна выполняться только по релизным тегам.`);
+        return;
+    }
+    // Проверяем, что условие не обходит проверку успешности тестов
+    if (ifCondition.includes('always()')) {
+        errors.push(`${path.basename(wfPath)}: job "deploy" использует условие "always()", что позволяет публикацию даже при ошибках тестирования. Это недопустимо.`);
+    }
+    // Проверяем, что условие ссылается на релизные теги
+    if (!ifCondition.includes('refs/tags')) {
         errors.push(`${path.basename(wfPath)}: job "deploy" не имеет условия запуска только по релизным тегам. Публикация должна выполняться только для тегов.`);
+    }
+    // Проверяем, что условие не содержит обходных конструкций
+    const bypassPatterns = ['always()', 'success() ||', 'failure() ||', 'cancelled() ||'];
+    for (const pattern of bypassPatterns) {
+        if (ifCondition.includes(pattern)) {
+            errors.push(`${path.basename(wfPath)}: job "deploy" содержит условие "${pattern}", которое позволяет обойти проверку успешности тестов. Это недопустимо.`);
+        }
     }
 }
 

@@ -78,9 +78,9 @@ test('2. Нет titleLang, но есть title — FAIL', () => {
 
 // 3. Нет en — FAIL
 test('3. Нет en — FAIL', () => {
-  const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), requireFixture('translations/missing-lang'), '--mode=new']);
-  assertExitCode(result, 1, 'Отсутствующий язык должен быть ошибкой');
-  assertContains(result.stdout + result.stderr, 'zh-cn', 'Сообщение должно упоминать отсутствующий язык');
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), requireFixture('translations/missing-en'), '--mode=new']);
+    assertExitCode(result, 1, 'Отсутствующий язык должен быть ошибкой');
+    assertContains(result.stdout + result.stderr, 'en', 'Сообщение должно упоминать отсутствующий язык en');
 });
 
 // 4. Нет zh-cn — FAIL
@@ -180,9 +180,44 @@ test('18. Существующий адаптер с переходным сос
 
 // 19. Авто-режим не может определить режим — NEEDS REVIEW (exit code 2)
 test('19. Авто-режим не может определить режим — NEEDS REVIEW', () => {
-  const autoUndeterminableDir = '/tmp/test-auto-undeterminable';
-  const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), autoUndeterminableDir, '--mode=auto']);
-  assertExitCode(result, 2, 'Авто-режим без возможности определить режим должен быть NEEDS REVIEW (exit 2)');
+    const autoUndeterminableDir = '/tmp/test-auto-undeterminable';
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), autoUndeterminableDir, '--mode=auto']);
+    assertExitCode(result, 2, 'Авто-режим без возможности определить режим должен быть NEEDS REVIEW (exit 2)');
+});
+
+console.log('\n=== Регрессионные тесты translations (дополнительные) ===\n');
+
+// 20. React: namespace отсутствует в zh-cn — FAIL
+test('20. React: namespace отсутствует в zh-cn — FAIL', () => {
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), requireFixture('translations/react-multi-ns-incomplete'), '--mode=new']);
+    assertExitCode(result, 1, 'Отсутствующий namespace в zh-cn должен быть ошибкой');
+    assertContains(result.stdout + result.stderr, 'zh-cn', 'Сообщение должно упоминать zh-cn');
+    assertContains(result.stdout + result.stderr, 'settings', 'Сообщение должно упоминать недостающий namespace');
+});
+
+// 21. React: namespace присутствует во всех языках — PASS
+test('21. React: namespace присутствует во всех языках — PASS', () => {
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), requireFixture('translations/full'), '--mode=new']);
+    assertExitCode(result, 0, 'React с полными переводами во всех пространствах имён должен пройти');
+});
+
+// 22. HTML: flat format — корректная проверка → PASS
+test('22. HTML i18n flat format — PASS', () => {
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), requireFixture('translations/html-flat-i18n'), '--mode=new']);
+    assertExitCode(result, 0, 'HTML i18n в плоском формате должен пройти');
+});
+
+// 23. HTML: legacy format — корректная проверка → PASS
+test('23. HTML i18n legacy format — PASS', () => {
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), requireFixture('translations/html-legacy-i18n'), '--mode=new']);
+    assertExitCode(result, 0, 'HTML i18n в legacy формате должен пройти');
+});
+
+// 24. HTML: legacy format с отсутствующим переводом → FAIL
+test('24. HTML i18n legacy с отсутствующим переводом — FAIL', () => {
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/check-translations.mjs'), requireFixture('translations/html-legacy-incomplete'), '--mode=new']);
+    assertExitCode(result, 1, 'HTML i18n legacy с отсутствующим переводом должен быть ошибкой');
+    assertContains(result.stdout + result.stderr, 'zh-cn', 'Сообщение должно упоминать отсутствующий язык zh-cn');
 });
 
 console.log('\n=== Регрессионные тесты release-preflight ===\n');
@@ -260,14 +295,41 @@ test('27. Некорректный YAML — FAIL', () => {
 
 // 28. Неизвестный профиль — FAIL
 test('28. Неизвестный профиль — FAIL', () => {
-  const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/release-preflight.mjs'), requireFixture('release/correct'), '--profile=unknown-profile', '--no-git-check']);
-  assertExitCode(result, 1, 'Неизвестный профиль должен быть ошибкой');
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/release-preflight.mjs'), requireFixture('release/correct'), '--profile=unknown-profile', '--no-git-check']);
+    assertExitCode(result, 1, 'Неизвестный профиль должен быть ошибкой');
+});
+
+// 29. Существующая job без обязательного Action — FAIL
+test('29. Существующая job без обязательного Action — FAIL', () => {
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/release-preflight.mjs'), requireFixture('release/missing-check-action'), '--profile=create-adapter-default', '--no-git-check']);
+    assertExitCode(result, 1, 'Отсутствие обязательного Action в существующей job должно быть ошибкой');
+    assertContains(result.stdout + result.stderr, 'не найден', 'Сообщение должно упоминать отсутствие Action');
+});
+
+// 30. Существующая job с неполными inputs — FAIL
+test('30. Существующая job с неполными inputs — FAIL', () => {
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/release-preflight.mjs'), requireFixture('release/missing-action-inputs'), '--profile=create-adapter-default', '--no-git-check']);
+    assertExitCode(result, 1, 'Отсутствие обязательных inputs в Action должно быть ошибкой');
+    assertContains(result.stdout + result.stderr, 'node-version', 'Сообщение должно упоминать отсутствующий input');
+});
+
+// 31. Deploy с always() обходом тестов → FAIL
+test('31. Deploy с always() обходом тестов → FAIL', () => {
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/release-preflight.mjs'), requireFixture('release/deploy-always-or-tag'), '--profile=create-adapter-default', '--no-git-check']);
+    assertExitCode(result, 1, 'Deploy с always() в условии должен быть ошибкой');
+    assertContains(result.stdout + result.stderr, 'always()', 'Сообщение должно упоминать always()');
+});
+
+// 32. Корректное официальное условие deploy → PASS
+test('32. Корректное официальное условие deploy → PASS', () => {
+    const result = runCommand('node', [path.join(SKILL_ROOT, 'scripts/release-preflight.mjs'), requireFixture('release/correct-deploy-condition'), '--profile=create-adapter-default', '--no-git-check']);
+    assertExitCode(result, 0, 'Корректное условие deploy должно пройти');
 });
 
 console.log('\n=== Итог ===');
 console.log(`  Пройдено: ${passed}`);
 console.log(`  Провалено: ${failed}`);
 if (failed > 0) {
-  process.exit(1);
+    process.exit(1);
 }
 console.log('\nВсе тесты пройдены!');

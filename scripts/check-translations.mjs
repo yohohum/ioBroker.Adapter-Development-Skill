@@ -5,7 +5,7 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import JSON5 from 'json5';
 
-const ROOT = process.argv[2] ?? '.';
+const ROOT = path.resolve(process.argv[2] ?? '.');
 const CLI_MODE = process.argv.includes('--mode=new')
   ? 'new'
   : process.argv.includes('--mode=existing')
@@ -472,7 +472,7 @@ function checkHtmlAdminI18n(htmlI18nPath) {
   const langNsData = new Map();
 
   for (const entry of entries) {
-    const langName = entry.name;
+    const langName = entry.name.replace(/\.json$/, '');
     const entryPath = path.join(htmlI18nPath, entry.name);
 
     if (entry.isDirectory()) {
