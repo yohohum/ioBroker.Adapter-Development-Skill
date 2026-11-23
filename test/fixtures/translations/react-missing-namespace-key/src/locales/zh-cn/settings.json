@@ -1,0 +1,7 @@
+{
+  "timeout": "Timeout",
+  "retries": "Retries",
+  "advanced": {
+    "mode": "Mode"
+  }
+}

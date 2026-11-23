@@ -1,0 +1,8 @@
+{
+  "timeout": 123,
+  "retries": "Retries",
+  "advanced": {
+    "mode": "Mode",
+    "interval": "Interval"
+  }
+}

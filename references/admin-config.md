@@ -44,6 +44,8 @@
 - `title` и `desc` в `io-package.json`;
 - release news в `io-package.json`.
 
+Проверяй каждый namespace Admin i18n отдельно во всех 11 языках. Актуальные форматы create-adapter/adapter-dev: `admin/i18n/<lang>.json` для HTML/JavaScript UI, `admin/src/i18n/<lang>.json` для React UI, а также namespace-файлы `src/locales/<lang>/<namespace>.json`/`src/i18n/`, если они используются шаблоном. Устаревший каталог `admin/i18n/<lang>/translations.json` распознаётся для совместимости (repochecker поддерживает его с рекомендацией миграции) и требует миграции на `admin/i18n/<lang>.json`; не смешивай оба формата для одного языка.
+
 Подключи `@iobroker/adapter-dev` как devDependency и сохрани generated scripts. Типовая интеграция пакета выглядит так:
 
 ```json

@@ -34,7 +34,7 @@ Backend проверяет native config независимо от UI. Обра�
 
 Для НОВОГО адаптера, подаваемого в `ioBroker.repositories`, repochecker требует переводы на ВСЕ 11 языков (en, de, ru, pt, nl, fr, it, es, pl, uk, zh-cn):
 - `common.titleLang`, `common.desc`, `common.news` в `io-package.json`;
-- переводы Admin UI: для jsonConfig — локали внутри `admin/jsonConfig.json(5)` (поля `label`, `desc` с объектом языков); для React — файлы локалей в `src/locales/` или как указано в шаблоне create-adapter.
+- переводы Admin UI: для jsonConfig — локали внутри `admin/jsonConfig.json(5)` (поля `label`, `desc` с объектом языков); для React — актуальные файлы `admin/src/i18n/<lang>.json`, а также namespace-файлы в `src/locales/<lang>/<namespace>.json`/`src/i18n/`, если это выбрано шаблоном create-adapter. Проверяй каждый namespace отдельно во всех 11 языках.
 
 Для СУЩЕСТВУЮЩИХ адаптеров при обновлении достаточно en + de.
 
@@ -43,9 +43,12 @@ Backend проверяет native config независимо от UI. Обра�
 Проверь полноту переводов скриптом `scripts/check-translations.mjs --mode=new` (для новых адаптеров) или `--mode=existing` (для существующих). Скрипт проверяет:
 - `common.titleLang`, `common.desc`, `common.news` в `io-package.json`;
 - локализованные поля jsonConfig (`label`, `desc`, `validatorErrorText`);
-- React-локали и HTML/JavaScript i18n с наборами ключей.
+- React-локали (`admin/src/i18n/<lang>.json`, `src/locales/<lang>/<namespace>.json`, `src/i18n/`) и HTML/JavaScript i18n с наборами ключей;
+- пустые каталоги, пустые строки и отсутствие отдельного namespace хотя бы в одном языке.
 
-Не используй устаревший путь `admin/i18n/*/translations.json` как универсальный — структура переводов зависит от выбранного типа Admin UI (jsonConfig или React).
+Режим `auto` не выбирает `existing` автоматически: если тип проекта нельзя определить однозначно, скрипт возвращает `NEEDS REVIEW` с ненулевым exit code. Для предрелизной проверки нового адаптера всегда используй `--mode=new`.
+
+Актуальный HTML/JavaScript-формат create-adapter/adapter-dev — `admin/i18n/<lang>.json`. Каталог `admin/i18n/*/translations.json` — устаревший формат: он распознаётся для совместимости (repochecker поддерживает его с рекомендацией миграции), скрипт выдаёт сообщение о миграции. Для нового адаптера сразу используй `admin/i18n/<lang>.json`; не смешивай оба формата для одного языка.
 
 ## Критерии завершения
 

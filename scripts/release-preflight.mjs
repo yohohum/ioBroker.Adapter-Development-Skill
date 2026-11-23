@@ -168,15 +168,16 @@ function validatePublishWorkflow(wfPath, profileName) {
         }
     }
 
-    // Проверяем Actions и их inputs
+    // Проверяем Actions и их inputs даже если job уже существует.
+    // Отсутствующий Action внутри существующей job — ошибка, а не повод пропустить проверку.
     if (jobs['check-and-lint']) {
-        checkActionInputs(jobs['check-and-lint'], 'ioBroker/testing-action-check', ['node-version'], wfPath);
+        checkActionInputs(jobs['check-and-lint'], 'check-and-lint', 'ioBroker/testing-action-check', ['node-version'], 2, wfPath);
     }
     if (jobs['adapter-tests']) {
-        checkActionInputs(jobs['adapter-tests'], 'ioBroker/testing-action-adapter', ['node-version', 'os'], wfPath);
+        checkActionInputs(jobs['adapter-tests'], 'adapter-tests', 'ioBroker/testing-action-adapter', ['node-version', 'os'], 1, wfPath);
     }
     if (jobs['deploy']) {
-        checkActionInputs(jobs['deploy'], 'ioBroker/testing-action-deploy', ['node-version', 'github-token'], wfPath);
+        checkActionInputs(jobs['deploy'], 'deploy', 'ioBroker/testing-action-deploy', ['node-version', 'github-token'], 1, wfPath);
     }
 
     // Проверяем матрицу Node.js
@@ -195,30 +196,37 @@ function validatePublishWorkflow(wfPath, profileName) {
     checkNoManualPublish(jobs, wfPath);
 }
 
-function checkActionInputs(job, expectedAction, requiredInputs, wfPath) {
-    const steps = job.steps || [];
+function actionRefMatches(uses, expectedAction) {
+    if (typeof uses !== 'string') return false;
+    return uses === expectedAction ||
+        uses.startsWith(`${expectedAction}@`) ||
+        uses.startsWith(`${expectedAction}/`);
+}
+
+function checkActionInputs(job, jobName, expectedAction, requiredInputs, minMajorVersion, wfPath) {
+    const steps = Array.isArray(job.steps) ? job.steps : [];
     let actionFound = false;
+
     for (const step of steps) {
-        if (step.uses && step.uses.startsWith(expectedAction)) {
-            actionFound = true;
-            const withInputs = step.with || {};
-            for (const input of requiredInputs) {
-                if (!(input in withInputs)) {
-                    errors.push(`${path.basename(wfPath)}: Action ${expectedAction} в job "${job.name || 'unnamed'}" не имеет обязательного параметра "${input}".`);
-                }
+        if (!actionRefMatches(step?.uses, expectedAction)) continue;
+        actionFound = true;
+        const withInputs = step.with || {};
+        for (const input of requiredInputs) {
+            if (!(input in withInputs)) {
+                errors.push(`${path.basename(wfPath)}: Action ${expectedAction} в job "${jobName}" не имеет обязательного параметра "${input}".`);
             }
-            // Проверяем версию Action
-            const versionMatch = step.uses.match(/@v(\d+)/);
-            if (versionMatch) {
-                const majorVersion = parseInt(versionMatch[1], 10);
-                if (expectedAction === 'ioBroker/testing-action-check' && majorVersion < 2) {
-                    errors.push(`${path.basename(wfPath)}: ${expectedAction} должен быть @v2 или выше, найден ${step.uses}.`);
-                }
+        }
+        const versionMatch = step.uses.match(/@v(\d+)(?:\.|$)/);
+        if (versionMatch) {
+            const majorVersion = parseInt(versionMatch[1], 10);
+            if (majorVersion < minMajorVersion) {
+                errors.push(`${path.basename(wfPath)}: ${expectedAction} в job "${jobName}" должен быть @v${minMajorVersion} или выше, найден ${step.uses}.`);
             }
         }
     }
+
     if (!actionFound) {
-        errors.push(`${path.basename(wfPath)}: Action ${expectedAction} не найден в job "${job.name || 'unnamed'}". Это обязательное действие для публикации.`);
+        errors.push(`${path.basename(wfPath)}: Action ${expectedAction} не найден в существующей job "${jobName}". Это обязательное действие для публикации.`);
     }
 }
 
@@ -284,24 +292,77 @@ function checkDeployNeeds(jobs, wfPath) {
 function checkDeployCondition(jobs, wfPath) {
     const deployJob = jobs['deploy'];
     if (!deployJob) return;
-    const ifCondition = deployJob.if;
-    if (!ifCondition) {
+
+    const rawCondition = deployJob.if;
+    if (rawCondition === undefined || rawCondition === null || String(rawCondition).trim() === '') {
         errors.push(`${path.basename(wfPath)}: job "deploy" не имеет условия запуска. Публикация должна выполняться только по релизным тегам.`);
         return;
     }
-    // Проверяем, что условие не обходит проверку успешности тестов
-    if (ifCondition.includes('always()')) {
-        errors.push(`${path.basename(wfPath)}: job "deploy" использует условие "always()", что позволяет публикацию даже при ошибках тестирования. Это недопустимо.`);
+
+    const condition = String(rawCondition).replace(/\$\{\{/g, '').replace(/\}\}/g, '').trim();
+    const lower = condition.toLowerCase();
+
+    if (/^(true|1)$/.test(lower)) {
+        errors.push(`${path.basename(wfPath)}: job "deploy" имеет безусловный запуск. Публикация должна выполняться только по релизным тегам.`);
+        return;
     }
-    // Проверяем, что условие ссылается на релизные теги
-    if (!ifCondition.includes('refs/tags')) {
+
+    // Условия, которые могут выполнить deploy после падения/отмены тестов.
+    for (const fn of ['always', 'failure', 'cancelled']) {
+        if (new RegExp(`\\b${fn}\\s*\\(`).test(lower)) {
+            errors.push(`${path.basename(wfPath)}: job "deploy" содержит "${fn}()", что позволяет публикацию без успешного завершения тестов. Это недопустимо.`);
+        }
+    }
+
+    const tagGuardPatterns = [
+        /startsWith\s*\(\s*github\.ref\s*,\s*['"]refs\/tags\//i,
+        /github\.ref\s*==\s*['"]refs\/tags\//i,
+        /contains\s*\(\s*github\.ref\s*,\s*['"]refs\/tags\//i,
+        /github\.ref_type\s*==\s*['"]tag['"]/i,
+    ];
+    const hasTagGuard = tagGuardPatterns.some(pattern => pattern.test(condition));
+
+    if (!hasTagGuard) {
         errors.push(`${path.basename(wfPath)}: job "deploy" не имеет условия запуска только по релизным тегам. Публикация должна выполняться только для тегов.`);
     }
-    // Проверяем, что условие не содержит обходных конструкций
-    const bypassPatterns = ['always()', 'success() ||', 'failure() ||', 'cancelled() ||'];
-    for (const pattern of bypassPatterns) {
-        if (ifCondition.includes(pattern)) {
-            errors.push(`${path.basename(wfPath)}: job "deploy" содержит условие "${pattern}", которое позволяет обойти проверку успешности тестов. Это недопустимо.`);
+
+    // Отрицание tag-guard не является безопасным ограничением.
+    // Проверяем все формы: !contains(...), !startsWith(...), !(github.ref == ...),
+    // github.ref != ..., github.ref_type != 'tag', а также сравнение tag-guard с false/true.
+    const negatedTagGuardPatterns = [
+        /!\s*\(*\s*startsWith\s*\(\s*github\.ref\s*,\s*['"]refs\/tags\//i,
+        /!\s*\(*\s*contains\s*\(\s*github\.ref\s*,\s*['"]refs\/tags\//i,
+        /!\s*\(*\s*github\.ref\s*==\s*['"]refs\/tags\//i,
+        /!\s*\(*\s*github\.ref_type\s*==\s*['"]tag['"]/i,
+        /github\.ref\s*!=\s*['"]refs\/tags\//i,
+        /github\.ref_type\s*!=\s*['"]tag['"]/i,
+        /(?:startsWith|contains)\s*\(\s*github\.ref[^)]*\)\s*==\s*false/i,
+        /(?:startsWith|contains)\s*\(\s*github\.ref[^)]*\)\s*!=\s*true/i,
+        /github\.ref_type\s*==\s*['"]tag['"]\s*==\s*false/i,
+    ];
+    if (negatedTagGuardPatterns.some(pattern => pattern.test(condition))) {
+        errors.push(`${path.basename(wfPath)}: job "deploy" инвертирует проверку тега — это небезопасное условие публикации.`);
+    }
+
+    // Ветки, pull request и ручные refs не должны открывать публикацию.
+    // Отрицание ветки (например, !startsWith(github.ref, 'refs/heads/')) безопасно и не считается веткой.
+    const positiveCondition = condition
+        .replace(/!\s*\(*\s*(?:startsWith|contains)\s*\(\s*github\.ref\s*,\s*['"]refs\/heads\//gi, '')
+        .replace(/github\.ref\s*!=\s*['"]refs\/heads\//gi, '');
+    const branchOrPullRequestPattern = new RegExp(
+        'refs/heads|github\\.head_ref|github\\.base_ref|github\\.event_name\\s*==\\s*[\'"]pull_request[\'"]|github\\.event\\.pull_request',
+        'i'
+    );
+    if (branchOrPullRequestPattern.test(positiveCondition)) {
+        errors.push(`${path.basename(wfPath)}: job "deploy" содержит условие для ветки/pull request; публикация должна выполняться только по тегам.`);
+    }
+
+    // OR допустим только если каждая ветка условия сама ограничена тегом.
+    if (condition.includes('||')) {
+        const operands = condition.split('||').map(part => part.trim()).filter(Boolean);
+        const unsafeOperands = operands.filter(part => !tagGuardPatterns.some(pattern => pattern.test(part)));
+        if (unsafeOperands.length > 0) {
+            errors.push(`${path.basename(wfPath)}: job "deploy" использует OR с условием, не ограниченным релизным тегом: ${unsafeOperands.join(' || ')}. Это позволяет публикацию вне тега.`);
         }
     }
 }
@@ -311,7 +372,7 @@ function checkNoManualPublish(jobs, wfPath) {
     for (const [jobName, job] of Object.entries(jobs)) {
         if (job.steps) {
             for (const step of job.steps) {
-                if (step.run && /npm publish/.test(step.run)) {
+                if (step.run && /\b(?:npm|pnpm|yarn)\s+publish\b/.test(step.run)) {
                     errors.push(`${path.basename(wfPath)}: job "${jobName}" содержит прямой вызов "npm publish". Используйте ioBroker/testing-action-deploy@v1 вместо ручной публикации.`);
                 }
             }

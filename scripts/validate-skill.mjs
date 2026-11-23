@@ -357,5 +357,96 @@ if (!/check-translations\.mjs.*--mode=new/.test(runChecksContent)) {
 // 14. release-preflight.mjs корректно обрабатывает npm-publish.yml только для custom-approved
 // (проверка уже встроена в release-preflight.mjs itself)
 
+// 15. Определение режима локализации не использует Git history, возраст или число коммитов
+for (const forbidden of ['git log', 'commitCount', 'rev-list', 'git rev-parse']) {
+    if (translationsContent.includes(forbidden)) {
+        failed = true;
+        console.error(`scripts/check-translations.mjs использует ненадёжное определение режима через "${forbidden}".`);
+    }
+}
+if (/const\s+MODE\s*=/.test(translationsContent)) {
+    failed = true;
+    console.error('scripts/check-translations.mjs содержит глобальную константу MODE вместо единого context.');
+}
+
+// 16. check-translations.mjs использует единый context и поддерживает все форматы Admin i18n
+if (!translationsContent.includes('context.strict') || !translationsContent.includes('context.mode')) {
+    failed = true;
+    console.error('scripts/check-translations.mjs не использует единый context для режима и строгости.');
+}
+for (const requiredPath of ['admin/src/i18n', 'src/locales', 'src/i18n', 'admin/i18n']) {
+    if (!translationsContent.includes(requiredPath)) {
+        failed = true;
+        console.error(`scripts/check-translations.mjs не поддерживает путь Admin i18n: ${requiredPath}`);
+    }
+}
+if (!/translations\.json/.test(translationsContent) || !/мигрируйте/i.test(translationsContent)) {
+    failed = true;
+    console.error('scripts/check-translations.mjs не распознаёт legacy HTML i18n с сообщением о миграции.');
+}
+
+// 17. Обязательные регрессионные фикстуры существуют
+const requiredFixtures = [
+    'test/fixtures/translations/react-complete',
+    'test/fixtures/translations/react-missing-namespace-file',
+    'test/fixtures/translations/react-missing-namespace-key',
+    'test/fixtures/translations/react-empty-directory',
+    'test/fixtures/translations/react-empty-value',
+    'test/fixtures/translations/react-multi-namespace',
+    'test/fixtures/translations/react-full',
+    'test/fixtures/translations/react-empty-namespace-object',
+    'test/fixtures/translations/react-invalid-value',
+    'test/fixtures/translations/missing-en',
+    'test/fixtures/translations/auto-undeterminable',
+    'test/fixtures/release/missing-check-action',
+    'test/fixtures/release/deploy-unsafe-or-branch',
+    'test/fixtures/release/deploy-negated-contains',
+    'test/fixtures/release/deploy-official-condition'
+];
+for (const fixture of requiredFixtures) {
+    if (!fs.existsSync(path.join(root, fixture))) {
+        failed = true;
+        console.error(`Отсутствует обязательная регрессионная фикстура: ${fixture}`);
+    }
+}
+
+// 18. Регрессионные тесты не зависят от оставленных вручную файлов вне репозитория
+const regressionSource = fs.readFileSync(path.join(root, 'test/run-regression-tests.mjs'), 'utf8');
+if (regressionSource.includes('/tmp/test-auto-undeterminable')) {
+    failed = true;
+    console.error('test/run-regression-tests.mjs зависит от временного пути /tmp/test-auto-undeterminable вместо фикстуры в репозитории.');
+}
+for (const requiredScenario of [
+    '20 Git-коммит',
+    'react-missing-namespace-file',
+    'react-missing-namespace-key',
+    'react-empty-namespace-object',
+    'deploy-unsafe-or-branch',
+    'deploy-negated-contains',
+    'missing-check-action'
+]) {
+    if (!regressionSource.includes(requiredScenario)) {
+        failed = true;
+        console.error(`В регрессионных тестах отсутствует сценарий: ${requiredScenario}`);
+    }
+}
+
+// 19. release-preflight.mjs проверяет Action внутри существующей job и небезопасные OR/ветки deploy
+const releaseContent = fs.readFileSync(path.join(root, 'scripts/release-preflight.mjs'), 'utf8');
+for (const requiredCheck of ['не найден в существующей job', 'refs/heads', 'unsafeOperands', 'negatedTagGuardPatterns']) {
+    if (!releaseContent.includes(requiredCheck)) {
+        failed = true;
+        console.error(`scripts/release-preflight.mjs не содержит защиту: ${requiredCheck}`);
+    }
+}
+
+// 20. check-translations.mjs отдельно проверяет пустые namespace-файлы и нестроковые значения
+for (const requiredCheck of ['не содержит строковых переводов', 'не является строкой']) {
+    if (!translationsContent.includes(requiredCheck)) {
+        failed = true;
+        console.error(`scripts/check-translations.mjs не содержит проверку: ${requiredCheck}`);
+    }
+}
+
 if (failed) process.exit(1);
 console.log(`Skill validation passed. ${required.length} required files found; ${markdownFiles.length} Markdown files scanned.`);

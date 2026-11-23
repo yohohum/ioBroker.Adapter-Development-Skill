@@ -1,0 +1,8 @@
+{
+  "greeting": "",
+  "farewell": "Goodbye",
+  "nested": {
+    "title": "Title",
+    "description": "Description"
+  }
+}
