@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
-import { load } from 'js-yaml';
-import { validatePublishWorkflow as validateWorkflow } from './lib/publish-workflow.mjs';
+import { load as loadYaml } from 'js-yaml';
+import { validatePublishWorkflow as validateWorkflow, validateWorkflowFile } from './lib/publish-workflow.mjs';
 
 const VALID_PROFILES = ['create-adapter-default', 'custom-approved'];
 
@@ -23,16 +23,6 @@ function readJson(name) {
     try { return JSON.parse(fs.readFileSync(path.join(root, name), 'utf8')); }
     catch (error) { errors.push(`${name}: ${error instanceof Error ? error.message : String(error)}`); return undefined; }
 }
-function readYaml(filePath) {
-    try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        return load(content);
-    } catch (error) {
-        errors.push(`${filePath}: некорректный YAML: ${error instanceof Error ? error.message : String(error)}`);
-        return undefined;
-    }
-}
-
 const pkg = readJson('package.json');
 const ioPkg = readJson('io-package.json');
 if (!pkg || !ioPkg) {
@@ -157,13 +147,23 @@ if (profile === 'custom-approved') {
 // --- Валидация структуры workflow публикации ---
 
 function validatePublishWorkflow(wfPath, profileName) {
-    const wf = readYaml(wfPath);
-    if (!wf) return;
-
-    const result = validateWorkflow(wf.jobs || {}, { wfName: path.basename(wfPath) });
-    errors.push(...result.errors);
-    warnings.push(...result.warnings);
-    reviewNeeded.push(...result.reviews);
+    const actionResult = validateWorkflowFile(wfPath, {
+        root,
+        requireIoBrokerActions: true,
+        profile: profileName,
+    });
+    errors.push(...actionResult.errors);
+    warnings.push(...actionResult.warnings);
+    reviewNeeded.push(...actionResult.reviews);
+    try {
+        const workflow = loadYaml(fs.readFileSync(wfPath, 'utf8'));
+        const result = validateWorkflow(workflow?.jobs ?? {}, { wfName: path.basename(wfPath) });
+        errors.push(...result.errors);
+        warnings.push(...result.warnings);
+        reviewNeeded.push(...result.reviews);
+    } catch (error) {
+        errors.push(`${wfPath}: некорректный YAML: ${error instanceof Error ? error.message : String(error)}`);
+    }
 }
 
 // --- Проверка git статуса ---

@@ -68,16 +68,16 @@ Official ioBroker documentation and schemas are the single source of truth for A
 │       ├── deploy-condition.mjs
 │       └── publish-workflow.mjs
 ├── templates/
-    ├── adapter-tests/
-    │   ├── testPackageFiles.cjs
-    │   └── testAdapter.integration.cjs
-    ├── changelog/
-    │   ├── CHANGELOG_OLD.md
-    │   └── README-changelog-section.md
-    ├── release/releaseconfig.json
-    └── github-actions/
-        ├── adapter-ci.yml
-        └── test-and-release.yml
+│   ├── adapter-tests/
+│   │   ├── testPackageFiles.cjs
+│   │   └── testAdapter.integration.cjs
+│   ├── changelog/
+│   │   ├── CHANGELOG_OLD.md
+│   │   └── README-changelog-section.md
+│   ├── release/releaseconfig.json
+│   └── github-actions/
+│       ├── adapter-ci.yml
+│       └── test-and-release.yml
 └── test/
     ├── fixtures/
     │   ├── translations/
@@ -97,7 +97,7 @@ Scripts are additional control, not a replacement for `@iobroker/testing`, `@iob
 
 ### GitHub Actions release checks
 
-The `create-adapter-default` profile uses an explicit allowlist: `actions/checkout@v6`, `actions/setup-node@v6`, `ioBroker/testing-action-check@v2`, `ioBroker/testing-action-adapter@v1`, and `ioBroker/testing-action-deploy@v1`. Refs are matched exactly; branches, missing refs, unknown Actions, and reusable workflows are rejected. Inputs are checked against supported names and required values from each official `action.yml`. Unknown expressions require manual review and never count as PASS. A user workflow can use `custom-approved`, but that profile does not automatically allow new Actions: any exception must be reviewed and explicitly added to the centralized policy with its source and input contract. FAIL means a violation was detected; NEEDS REVIEW means safety could not be confirmed automatically.
+The `create-adapter-default` profile uses an explicit allowlist: `actions/checkout@v6`, `actions/setup-node@v6`, `actions/upload-artifact@v6`, `softprops/action-gh-release@v3`, `ioBroker/testing-action-check@v2`, `ioBroker/testing-action-adapter@v1`, and `ioBroker/testing-action-deploy@v1`. Refs are matched exactly. Unknown Actions, remote reusable workflows, and unsupported constructs are rejected. Local reusable workflows and composite Actions are inspected recursively; reusable-workflow inputs are checked against `on.workflow_call`. Action inputs are checked for names, required values, types, and documented constraints from official `action.yml` contracts. `custom-approved` does not turn unverified Actions into trusted ones: every additional Action requires an explicit allowlist entry with a fixed ref and documented contract. FAIL means a violation was found; NEEDS REVIEW means safety could not be established automatically.
 
 ## Installation in the agent repository
 

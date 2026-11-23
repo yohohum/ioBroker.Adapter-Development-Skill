@@ -5,7 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { load as loadYaml } from 'js-yaml';
-import { validateWorkflowActions } from '../scripts/lib/action-refs.mjs';
+import { validateWorkflowActions, validateWorkflowFile } from '../scripts/lib/action-refs.mjs';
 
 const TEST_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname));
 const SKILL_ROOT = path.resolve(TEST_ROOT, '..');
@@ -607,6 +607,93 @@ test('Все разрешённые Actions official workflow проходят �
   const workflow = loadYaml(fs.readFileSync(yaml, 'utf8'));
   const result = validateWorkflowActions(workflow.jobs, 'positive official workflow', { requireIoBrokerActions: true });
   assertEqual(result.errors.length, 0, 'Разрешённые actions не должны давать ошибки');
+});
+
+test('softprops/action-gh-release rejects invalid constrained inputs — FAIL', () => {
+  const result = validateWorkflowActions({ release: { steps: [{
+    uses: 'softprops/action-gh-release@v3', with: { make_latest: 'sometimes', draft: 'yes', unknown: true },
+  }] } }, 'workflow.yml');
+  assertContains(result.errors.join('\n'), 'make_latest', 'Unsupported enum must be rejected');
+  assertContains(result.errors.join('\n'), 'draft', 'Invalid boolean must be rejected');
+  assertContains(result.errors.join('\n'), 'unknown', 'Unknown input must be rejected');
+});
+
+function withTempWorkflow(workflowText, extraFiles = {}, fn) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-workflow-'));
+  try {
+    const workflowPath = path.join(root, '.github/workflows/main.yml');
+    fs.mkdirSync(path.dirname(workflowPath), { recursive: true });
+    fs.writeFileSync(workflowPath, workflowText);
+    for (const [relative, content] of Object.entries(extraFiles)) {
+      const filePath = path.join(root, relative);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, content);
+    }
+    fn(validateWorkflowFile(workflowPath, { root }));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('Рекурсивный локальный reusable workflow ловит неизвестный Action на втором уровне — FAIL', () => {
+  withTempWorkflow('name: test\non:\n  workflow_dispatch:\njobs:\n  one:\n    uses: ./.github/workflows/one.yml\n', {
+    '.github/workflows/one.yml': 'name: one\non:\n  workflow_call:\njobs:\n  two:\n    uses: ./.github/workflows/two.yml\n',
+    '.github/workflows/two.yml': 'name: two\non:\n  workflow_call:\njobs:\n  bad:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/not-approved@v1\n',
+  }, (result) => {
+    assertContains(result.errors.join('\n'), 'evil/not-approved', 'Ошибка должна указать Action во вложенном reusable workflow');
+  });
+});
+
+test('Локальный reusable workflow с обязательным input и secret проверяется — PASS', () => {
+  withTempWorkflow('name: test\non:\n  workflow_dispatch:\njobs:\n  call:\n    uses: ./.github/workflows/child.yml\n    with:\n      mode: strict\n    secrets:\n      token: ${{ secrets.TOKEN }}\n', {
+    '.github/workflows/child.yml': 'name: child\non:\n  workflow_call:\n    inputs:\n      mode:\n        required: true\n        type: string\n    secrets:\n      token:\n        required: true\njobs:\n  inner:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n',
+  }, (result) => assertEqual(result.errors.length, 0, 'Корректный local workflow_call должен пройти'));
+});
+
+test('Локальный reusable workflow с отсутствующим input/secret отклоняется — FAIL', () => {
+  withTempWorkflow('name: test\non:\n  workflow_dispatch:\njobs:\n  call:\n    uses: ./.github/workflows/child.yml\n', {
+    '.github/workflows/child.yml': 'name: child\non:\n  workflow_call:\n    inputs:\n      mode:\n        required: true\n        type: string\n    secrets:\n      token:\n        required: true\njobs:\n  inner:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n',
+  }, (result) => {
+    assertContains(result.errors.join('\n'), 'required input "mode"', 'Missing input should be reported');
+    assertContains(result.errors.join('\n'), 'required secret "token"', 'Missing secret should be reported');
+  });
+});
+
+test('Локальный reusable workflow с неправильным input type отклоняется — FAIL', () => {
+  withTempWorkflow('name: test\non:\n  workflow_dispatch:\njobs:\n  call:\n    uses: ./.github/workflows/child.yml\n    with:\n      enabled: 1\n', {
+    '.github/workflows/child.yml': 'name: child\non:\n  workflow_call:\n    inputs:\n      enabled:\n        required: true\n        type: boolean\njobs:\n  inner:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n',
+  }, (result) => assertContains(result.errors.join('\n'), 'must have type boolean', 'Wrong type should be reported'));
+});
+
+test('Remote reusable workflow без отдельного утверждения отклоняется — FAIL', () => {
+  withTempWorkflow('name: test\non:\n  workflow_dispatch:\njobs:\n  call:\n    uses: owner/repo/.github/workflows/build.yml@v1\n', {}, (result) => {
+    assertEqual(result.errors.length > 0, true, 'Remote reusable workflow must be rejected; result must never be PASS');
+  });
+});
+
+test('Локальный reusable workflow за пределами root отклоняется — FAIL', () => {
+  withTempWorkflow('name: test\non:\n  workflow_dispatch:\njobs:\n  call:\n    uses: ./../../../outside.yml\n', {}, (result) => {
+    assertContains(result.errors.join('\n'), 'escapes repository root', 'Path traversal should be reported');
+  });
+});
+
+test('Локальная composite action рекурсивно проверяется — FAIL', () => {
+  withTempWorkflow('name: test\non:\n  workflow_dispatch:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./.github/actions/outer\n', {
+    '.github/actions/outer/action.yml': 'name: outer\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/actions/inner\n',
+    '.github/actions/inner/action.yml': 'name: inner\nruns:\n  using: composite\n  steps:\n    - uses: evil/hidden-action@main\n',
+  }, (result) => assertContains(result.errors.join('\n'), 'evil/hidden-action', 'Непроверенный nested composite action должен быть обнаружен'));
+});
+
+test('Дублирующий YAML-ключ отклоняется — FAIL', () => {
+  withTempWorkflow('name: duplicate\non:\n  workflow_dispatch:\njobs:\n  bad:\n    runs-on: ubuntu-latest\n    steps: []\n    steps: []\n', {}, (result) => {
+    assertContains(result.errors.join('\n'), 'duplicate-key', 'Парсер должен сообщить duplicate YAML key');
+  });
+});
+
+test('Некорректная структура workflow отклоняется — FAIL', () => {
+  withTempWorkflow('name: invalid\non:\n  workflow_dispatch:\njobs: []\n', {}, (result) => {
+    assertContains(result.errors.join('\n'), 'unsupported workflow structure', 'Структура jobs sequence вместо mapping должна быть отклонена');
+  });
 });
 
 console.log('\n=== Защита от повторного появления дефектов ===\n');

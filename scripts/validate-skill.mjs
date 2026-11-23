@@ -4,7 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { load as loadYaml } from 'js-yaml';
-import { validatePublishWorkflow, validateWorkflowActions } from './lib/publish-workflow.mjs';
+import { validatePublishWorkflow, validateWorkflowActions, validateWorkflowFile } from './lib/publish-workflow.mjs';
 import { validateDeployCondition } from './lib/deploy-condition.mjs';
 import { OFFICIAL_ACTIONS } from './lib/action-refs.mjs';
 
@@ -80,8 +80,7 @@ for (const relative of yamlFiles) {
 }
 for (const workflowPath of ['.github/workflows/validate-skill.yml', 'templates/github-actions/adapter-ci.yml', 'templates/github-actions/test-and-release.yml']) {
     try {
-        const workflow = loadYaml(fs.readFileSync(path.join(root, workflowPath), 'utf8'));
-        const actions = validateWorkflowActions(workflow.jobs ?? {}, workflowPath, { requireIoBrokerActions: workflowPath.includes('test-and-release') });
+        const actions = validateWorkflowFile(path.join(root, workflowPath), { root, requireIoBrokerActions: workflowPath.includes('test-and-release') });
         if (actions.errors.length) {
             failed = true;
             for (const error of actions.errors) console.error(error);
@@ -245,6 +244,64 @@ try {
     testReleaseYaml = loadYaml(fs.readFileSync(testReleasePath, 'utf8'));
 } catch (_e) {
     testReleaseYaml = null;
+}
+
+// Оба README должны содержать один canonical file tree.
+const readmeTree = (name) => {
+    const content = fs.readFileSync(path.join(root, name), 'utf8');
+    const match = content.match(/## Structure\s*\n\n```text\n([\s\S]*?)\n```/);
+    if (!match) return null;
+    return match[1].split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim());
+};
+const englishTree = readmeTree('README.en.md');
+const russianTree = (() => {
+    const content = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+    const match = content.match(/## Структура\s*\n\n```text\n([\s\S]*?)\n```/);
+    return match ? match[1].split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim()) : null;
+})();
+if (!englishTree || !russianTree || JSON.stringify(englishTree) !== JSON.stringify(russianTree)) {
+    failed = true;
+    console.error('README.md и README.en.md должны содержать согласованное file tree.');
+} else {
+    const knownFiles = new Set([
+        'SKILL.md', 'README.md', 'README.en.md', 'CONTRIBUTING.md', 'LICENSE', '.editorconfig', '.gitignore',
+        '.github/workflows/validate-skill.yml',
+        'references/official-sources.md', 'references/object-model.md', 'references/security.md', 'references/transports.md', 'references/admin-config.md', 'references/testing.md', 'references/release-and-repository.md',
+        'workflows/01-discovery.md', 'workflows/02-scaffolding.md', 'workflows/03-architecture.md', 'workflows/04-implementation.md', 'workflows/05-admin-ui.md', 'workflows/06-debugging.md', 'workflows/07-testing.md', 'workflows/08-release-gate.md', 'workflows/09-release.md',
+        'scripts/adapter-preflight.mjs', 'scripts/check-object-dump.mjs', 'scripts/check-translations.mjs', 'scripts/release-preflight.mjs', 'scripts/run-adapter-checks.sh', 'scripts/validate-skill.mjs',
+        'scripts/lib/action-refs.mjs', 'scripts/lib/deploy-condition.mjs', 'scripts/lib/publish-workflow.mjs',
+        'templates/adapter-tests/testPackageFiles.cjs', 'templates/adapter-tests/testAdapter.integration.cjs', 'templates/changelog/CHANGELOG_OLD.md', 'templates/changelog/README-changelog-section.md', 'templates/release/releaseconfig.json', 'templates/github-actions/adapter-ci.yml', 'templates/github-actions/test-and-release.yml',
+        'test/run-regression-tests.mjs'
+    ]);
+    const directories = [];
+    const listedFiles = new Set();
+    for (const line of englishTree) {
+        if (line === '.') continue;
+        const match = line.match(/^([│ ]*)(?:├──|└──)\s+(.+)$/);
+        if (!match) continue;
+        const depth = Math.floor(match[1].length / 4);
+        const name = match[2];
+        directories.length = depth;
+        const relative = path.posix.join(...directories, name.replace(/\/$/, ''));
+        if (name.endsWith('/')) {
+            directories.push(name.slice(0, -1));
+            continue;
+        }
+        listedFiles.add(relative);
+        if (!knownFiles.has(relative)) {
+            failed = true;
+            console.error(`README file tree contains an unregistered path: ${relative}`);
+        } else if (!fs.existsSync(path.join(root, relative))) {
+            failed = true;
+            console.error(`README file tree references missing file: ${relative}`);
+        }
+    }
+    for (const expected of knownFiles) {
+        if (!listedFiles.has(expected)) {
+            failed = true;
+            console.error(`README file tree omits required path: ${expected}`);
+        }
+    }
 }
 
 if (!testReleaseYaml) {
