@@ -68,6 +68,19 @@ function runRelease(relativeFixture, profile = 'create-adapter-default') {
   return runCommand('node', [RELEASE_PREFLIGHT, requireFixture(relativeFixture), `--profile=${profile}`, '--no-git-check']);
 }
 
+function runReleaseWithWorkflowMutation(mutate) {
+  const source = requireFixture('release/correct');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-release-'));
+  fs.cpSync(source, temp, { recursive: true });
+  const workflowPath = path.join(temp, '.github/workflows/test-and-release.yml');
+  fs.writeFileSync(workflowPath, mutate(fs.readFileSync(workflowPath, 'utf8')));
+  try {
+    return runCommand('node', [RELEASE_PREFLIGHT, temp, '--profile=create-adapter-default', '--no-git-check']);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+}
+
 function createGitFixture(sourceRelative, commitCount = 20) {
   const source = requireFixture(sourceRelative);
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-git-'));
@@ -471,9 +484,9 @@ test('53a. Deploy с отрицанием contains(tag) — FAIL', () => {
   assertContains(result.stdout + result.stderr, 'инвертирует', 'Сообщение должно указывать на инверсию tag-guard');
 });
 
-test('53b. Deploy с безопасным отрицанием ветки при ref_type tag — PASS', () => {
+test('53b. Альтернативное условие с отрицанием ветки — NEEDS REVIEW', () => {
   const result = runRelease('release/deploy-negated-heads-safe');
-  assertExitCode(result, 0, 'Отрицание refs/heads при явном tag-guard не должно считаться веткой');
+  assertExitCode(result, 2, 'Непроверенная альтернативная схема требует ручной проверки');
 });
 
 test('53c. Ручной pnpm/yarn publish с лишними пробелами — FAIL', () => {
@@ -481,6 +494,52 @@ test('53c. Ручной pnpm/yarn publish с лишними пробелами �
   assertExitCode(result, 1, 'Ручной вызов publish через pnpm/yarn должен быть ошибкой');
   assertContains(result.stdout + result.stderr, 'npm publish', 'Сообщение должно указывать на ручную публикацию');
 });
+
+for (const [name, expression] of [
+  ['always()', "always() || startsWith(github.ref, 'refs/tags/v')"],
+  ['failure()', "failure() || startsWith(github.ref, 'refs/tags/v')"],
+  ['cancelled()', "cancelled() || startsWith(github.ref, 'refs/tags/v')"],
+  ['!success()', "!success() && startsWith(github.ref, 'refs/tags/v')"],
+  ['success() == false', "success() == false || startsWith(github.ref, 'refs/tags/v')"],
+  ['always() || tag', "always() || contains(github.ref, 'refs/tags')"],
+  ['complex status bypass', "(failure() && github.ref_type == 'tag') || startsWith(github.ref, 'refs/tags/v')"],
+]) {
+  test(`Deploy-condition regression ${name} — FAIL`, () => {
+    const result = runReleaseWithWorkflowMutation((yaml) => yaml.replace(
+      /if: startsWith\(github\.ref, 'refs\/tags\/v'\)/,
+      `if: \${{ ${expression} }}`
+    ));
+    assertExitCode(result, 1, `${name} не должен открывать публикацию`);
+  });
+}
+
+test('Неизвестное deploy expression — NEEDS REVIEW (exit 2)', () => {
+  const result = runReleaseWithWorkflowMutation((yaml) => yaml.replace(
+    /if: startsWith\(github\.ref, 'refs\/tags\/v'\)/,
+    "if: ${{ startsWith(github.ref, 'refs/tags/v') && format('unexpected') }}"
+  ));
+  assertExitCode(result, 2, 'Неизвестная функция должна потребовать ручную проверку');
+});
+
+for (const [label, action, replacement] of [
+  ['@main', 'ioBroker/testing-action-check@v2', 'ioBroker/testing-action-check@main'],
+  ['@master', 'ioBroker/testing-action-adapter@v1', 'ioBroker/testing-action-adapter@master'],
+  ['missing version', 'ioBroker/testing-action-deploy@v1', 'ioBroker/testing-action-deploy'],
+  ['invalid major', 'ioBroker/testing-action-check@v2', 'ioBroker/testing-action-check@v3'],
+  ['wrong repository', 'ioBroker/testing-action-check@v2', 'ioBroker/other-testing-action-check@v2'],
+]) {
+  test(`Action ref ${label} — FAIL`, () => {
+    const result = runReleaseWithWorkflowMutation((yaml) => {
+      if (label === 'missing version') {
+        return yaml.replace(
+          'ioBroker/testing-action-check@v2', 'ioBroker/testing-action-check'
+        ).replace(action, replacement);
+      }
+      return yaml.replace(action, replacement);
+    });
+    assertExitCode(result, 1, `Непроверенный Action ref ${label} должен быть отклонён`);
+  });
+}
 
 console.log('\n=== Защита от повторного появления дефектов ===\n');
 

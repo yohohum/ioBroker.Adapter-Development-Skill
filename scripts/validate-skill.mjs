@@ -4,6 +4,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { load as loadYaml } from 'js-yaml';
+import { validatePublishWorkflow } from './lib/publish-workflow.mjs';
+import { validateDeployCondition } from './lib/deploy-condition.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const required = [
@@ -15,6 +17,7 @@ const required = [
     'workflows/04-implementation.md', 'workflows/05-admin-ui.md', 'workflows/06-debugging.md',
     'workflows/07-testing.md', 'workflows/08-release-gate.md', 'workflows/09-release.md',
     'scripts/adapter-preflight.mjs', 'scripts/check-object-dump.mjs', 'scripts/check-translations.mjs', 'scripts/release-preflight.mjs',
+    'scripts/lib/action-refs.mjs', 'scripts/lib/deploy-condition.mjs', 'scripts/lib/publish-workflow.mjs',
     'scripts/run-adapter-checks.sh', 'scripts/validate-skill.mjs',
     'templates/adapter-tests/testPackageFiles.cjs', 'templates/adapter-tests/testAdapter.integration.cjs',
     'templates/github-actions/adapter-ci.yml', 'templates/github-actions/test-and-release.yml',
@@ -36,6 +39,7 @@ if (!frontmatter.startsWith('---') || !/\nname:\s*iobroker-adapter-development\n
 const nodeFiles = [
     'scripts/adapter-preflight.mjs', 'scripts/check-object-dump.mjs',
     'scripts/check-translations.mjs', 'scripts/release-preflight.mjs', 'scripts/validate-skill.mjs',
+    'scripts/lib/action-refs.mjs', 'scripts/lib/deploy-condition.mjs', 'scripts/lib/publish-workflow.mjs',
     'templates/adapter-tests/testPackageFiles.cjs',
     'templates/adapter-tests/testAdapter.integration.cjs'
 ];
@@ -47,10 +51,13 @@ for (const relative of nodeFiles) {
         console.error(`Syntax error in ${relative}:\n${result.stderr || result.stdout}`);
     }
 }
-const bash = spawnSync('bash', ['-n', path.join(root, 'scripts/run-adapter-checks.sh')], { encoding: 'utf8' });
-if (bash.status !== 0) {
-    failed = true;
-    console.error(`Shell syntax error:\n${bash.stderr || bash.stdout}`);
+const bashPath = spawnSync('sh', ['-c', 'command -v bash'], { encoding: 'utf8' });
+if (bashPath.status === 0) {
+    const bash = spawnSync('bash', ['-n', path.join(root, 'scripts/run-adapter-checks.sh')], { encoding: 'utf8' });
+    if (bash.status !== 0) {
+        failed = true;
+        console.error(`Shell syntax error:\n${bash.stderr || bash.stdout}`);
+    }
 }
 
 for (const relative of required.filter((item) => item.endsWith('.json'))) {
@@ -70,6 +77,22 @@ for (const relative of yamlFiles) {
         console.error(`Invalid YAML in ${relative}: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
+// Прочие YAML/JSON workflow fixtures также валидируются, за исключением
+// специально некорректной фикстуры invalid-yaml, которую проверяют тесты.
+function scanFixtureFiles(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) scanFixtureFiles(full);
+        else if (entry.isFile() && /\.ya?ml$/i.test(entry.name) && !full.includes(`${path.sep}invalid-yaml${path.sep}`)) {
+            try { loadYaml(fs.readFileSync(full, 'utf8')); }
+            catch (error) {
+                failed = true;
+                console.error(`Invalid fixture YAML in ${path.relative(root, full)}: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
+    }
+}
+scanFixtureFiles(path.join(root, 'test/fixtures'));
 
 // Check relative Markdown links without requiring a network connection.
 const markdownFiles = [];
@@ -180,12 +203,25 @@ for (const file of markdownFiles) {
     }
 }
 
-// 9. test-and-release.yml содержит необходимые jobs, зависимости, Actions с правильными версиями и inputs
+// 9. test-and-release.yml проверяется общим валидатором (те же правила, что в release-preflight)
+// Зафиксировать единое использование строгого валидатора deploy condition.
+const deployValidatorSource = fs.readFileSync(path.join(root, 'scripts/lib/deploy-condition.mjs'), 'utf8');
+if (typeof validateDeployCondition !== 'function' ||
+    !fs.readFileSync(path.join(root, 'scripts/release-preflight.mjs'), 'utf8').includes('validatePublishWorkflow') ||
+    !fs.readFileSync(path.join(root, 'scripts/lib/publish-workflow.mjs'), 'utf8').includes('validateDeployCondition')) {
+    failed = true;
+    console.error('release-preflight и validate-skill должны использовать общий валидатор deploy condition через publish-workflow.');
+}
+if (!deployValidatorSource.includes('matchesOfficialDeployCondition') ||
+    !deployValidatorSource.includes('refs/tags/v') ||
+    !deployValidatorSource.includes('FORBIDDEN_STATUS_FUNCTIONS')) {
+    failed = true;
+    console.error('Общий валидатор deploy condition не содержит структурную проверку официальной схемы и status-check функций.');
+}
 const testReleasePath = path.join(root, 'templates/github-actions/test-and-release.yml');
-const testReleaseContent = fs.readFileSync(testReleasePath, 'utf8');
 let testReleaseYaml;
 try {
-    testReleaseYaml = loadYaml(testReleaseContent);
+    testReleaseYaml = loadYaml(fs.readFileSync(testReleasePath, 'utf8'));
 } catch (_e) {
     testReleaseYaml = null;
 }
@@ -194,121 +230,17 @@ if (!testReleaseYaml) {
     failed = true;
     console.error('test-and-release.yml: не удалось распарсить YAML.');
 } else {
-    const jobs = testReleaseYaml.jobs || {};
-    const requiredJobs = ['check-and-lint', 'adapter-tests', 'deploy'];
-    for (const job of requiredJobs) {
-        if (!jobs[job]) {
-            failed = true;
-            console.error(`test-and-release.yml: отсутствует job "${job}".`);
-        }
-    }
-
-    // Проверяем зависимости deploy — fail-closed
-    if (jobs['deploy']) {
-        const needs = jobs['deploy'].needs || [];
-        const needsArray = Array.isArray(needs) ? needs : [needs];
-        if (!needsArray.includes('check-and-lint')) {
-            failed = true;
-            console.error('test-and-release.yml: job "deploy" не зависит от "check-and-lint".');
-        }
-        if (!needsArray.includes('adapter-tests')) {
-            failed = true;
-            console.error('test-and-release.yml: job "deploy" не зависит от "adapter-tests".');
-        }
-    }
-
-    // Проверяем Actions и их версии/inputs структурно
-    function checkActionInJob(jobName, expectedAction, minMajorVersion, requiredInputs) {
-        const job = jobs[jobName];
-        if (!job) return;
-        const steps = job.steps || [];
-        let actionFound = false;
-        for (const step of steps) {
-            if (step.uses && step.uses.startsWith(expectedAction)) {
-                actionFound = true;
-                const versionMatch = step.uses.match(/@v(\d+)/);
-                if (versionMatch) {
-                    const majorVersion = parseInt(versionMatch[1], 10);
-                    if (majorVersion < minMajorVersion) {
-                        failed = true;
-                        console.error(`test-and-release.yml: job "${jobName}": ${expectedAction} должен быть @v${minMajorVersion} или выше, найден ${step.uses}.`);
-                    }
-                }
-                const withInputs = step.with || {};
-                for (const input of requiredInputs) {
-                    if (!(input in withInputs)) {
-                        failed = true;
-                        console.error(`test-and-release.yml: job "${jobName}": Action ${expectedAction} не имеет обязательного параметра "${input}".`);
-                    }
-                }
-            }
-        }
-        if (!actionFound) {
-            failed = true;
-            console.error(`test-and-release.yml: job "${jobName}": не найден Action ${expectedAction}.`);
-        }
-    }
-
-    checkActionInJob('check-and-lint', 'ioBroker/testing-action-check', 2, ['node-version']);
-    checkActionInJob('adapter-tests', 'ioBroker/testing-action-adapter', 1, ['node-version', 'os']);
-    checkActionInJob('deploy', 'ioBroker/testing-action-deploy', 1, ['node-version', 'github-token']);
-
-    // Проверяем матрицу Node.js — отсутствие матрицы — FAIL
-    if (jobs['adapter-tests']) {
-        const strategy = jobs['adapter-tests'].strategy;
-        if (!strategy || !strategy.matrix) {
-            failed = true;
-            console.error('test-and-release.yml: job "adapter-tests" не имеет strategy.matrix — обязательна для тестирования на múltiples версиях.');
-        } else {
-            const matrix = strategy.matrix;
-            const nodeVersions = matrix['node-version'];
-            if (!Array.isArray(nodeVersions)) {
-                failed = true;
-                console.error(`test-and-release.yml: job "adapter-tests": matrix['node-version'] должен быть массивом, получен: ${typeof nodeVersions}.`);
-            } else {
-                const requiredNodeVersions = ['22', '24', '26'];
-                const missingNode = requiredNodeVersions.filter(v => !nodeVersions.includes(v));
-                if (missingNode.length > 0) {
-                    failed = true;
-                    console.error(`test-and-release.yml: job "adapter-tests": неполная матрица Node.js, отсутствуют версии: ${missingNode.join(', ')}.`);
-                }
-            }
-            const osList = matrix.os;
-            if (!Array.isArray(osList)) {
-                failed = true;
-                console.error(`test-and-release.yml: job "adapter-tests": matrix['os'] должен быть массивом, получен: ${typeof osList}.`);
-            } else {
-                const requiredOS = ['ubuntu-latest', 'windows-latest', 'macos-latest'];
-                const missingOS = requiredOS.filter(v => !osList.includes(v));
-                if (missingOS.length > 0) {
-                    failed = true;
-                    console.error(`test-and-release.yml: job "adapter-tests": неполная матрица OS, отсутствуют: ${missingOS.join(', ')}.`);
-                }
-            }
-        }
-    } else {
+    const result = validatePublishWorkflow(testReleaseYaml.jobs || {}, { wfName: 'test-and-release.yml' });
+    for (const error of result.errors) {
         failed = true;
-        console.error('test-and-release.yml: отсутствует job "adapter-tests" с матрицей тестирования.');
+        console.error(error);
     }
-
-    // Проверяем условия deploy (только по тегам)
-    if (jobs['deploy']) {
-        const ifCondition = jobs['deploy'].if;
-        if (!ifCondition || !ifCondition.includes('refs/tags')) {
-            failed = true;
-            console.error('test-and-release.yml: job "deploy" не имеет условия запуска только по релизным тегам.');
-        }
+    for (const review of result.reviews) {
+        failed = true;
+        console.error(`test-and-release.yml: NEEDS REVIEW: ${review}`);
     }
-
-    // Проверяем отсутствие прямого npm publish
-    for (const [jobName, job] of Object.entries(jobs)) {
-        const steps = job.steps || [];
-        for (const step of steps) {
-            if (step.run && /npm publish/.test(step.run)) {
-                failed = true;
-                console.error(`test-and-release.yml: job "${jobName}" содержит прямой вызов "npm publish". Используйте ioBroker/testing-action-deploy@v1.`);
-            }
-        }
+    for (const warning of result.warnings) {
+        console.warn(`WARN  ${warning}`);
     }
 }
 
@@ -399,9 +331,7 @@ const requiredFixtures = [
     'test/fixtures/translations/missing-en',
     'test/fixtures/translations/auto-undeterminable',
     'test/fixtures/release/missing-check-action',
-    'test/fixtures/release/deploy-unsafe-or-branch',
-    'test/fixtures/release/deploy-negated-contains',
-    'test/fixtures/release/deploy-official-condition'
+    'test/fixtures/release/deploy-unsafe-or-branch'
 ];
 for (const fixture of requiredFixtures) {
     if (!fs.existsSync(path.join(root, fixture))) {
@@ -431,13 +361,16 @@ for (const requiredScenario of [
     }
 }
 
-// 19. release-preflight.mjs проверяет Action внутри существующей job и небезопасные OR/ветки deploy
+// 19. Общие правила версий Actions и deploy condition вызываются release-preflight
+// и validate-skill через publish-workflow; проверяем модульный контракт и отсутствие
+// старого локального поиска refs/tags в обоих вызывающих скриптах.
 const releaseContent = fs.readFileSync(path.join(root, 'scripts/release-preflight.mjs'), 'utf8');
-for (const requiredCheck of ['не найден в существующей job', 'refs/heads', 'unsafeOperands', 'negatedTagGuardPatterns']) {
-    if (!releaseContent.includes(requiredCheck)) {
-        failed = true;
-        console.error(`scripts/release-preflight.mjs не содержит защиту: ${requiredCheck}`);
-    }
+if (!releaseContent.includes("'./lib/publish-workflow.mjs'") ||
+    !fs.readFileSync(path.join(root, 'scripts/lib/publish-workflow.mjs'), 'utf8').includes('validateRequiredActions') ||
+    !fs.readFileSync(path.join(root, 'scripts/lib/publish-workflow.mjs'), 'utf8').includes('validateDeployCondition') ||
+    /ifCondition\.includes\(['"]refs\/tags['"]\)/.test(releaseContent + fs.readFileSync(path.join(root, 'scripts/validate-skill.mjs'), 'utf8'))) {
+    failed = true;
+    console.error('Проверка публикации должна выполняться общими валидаторами Action refs и deploy condition.');
 }
 
 // 20. check-translations.mjs отдельно проверяет пустые namespace-файлы и нестроковые значения

@@ -59,21 +59,26 @@ Official ioBroker documentation and schemas are the single source of truth for A
 ├── scripts/
 │   ├── adapter-preflight.mjs
 │   ├── check-object-dump.mjs
+│   ├── check-translations.mjs
 │   ├── release-preflight.mjs
 │   ├── run-adapter-checks.sh
-│   └── validate-skill.mjs
+│   ├── validate-skill.mjs
+│   └── lib/
+│       ├── action-refs.mjs
+│       ├── deploy-condition.mjs
+│       └── publish-workflow.mjs
 └── templates/
     ├── adapter-tests/
     │   ├── testPackageFiles.cjs
     │   └── testAdapter.integration.cjs
     ├── changelog/
-│   │   ├── CHANGELOG_OLD.md
-│   │   └── README-changelog-section.md
-│   ├── release/releaseconfig.json
-│   └── github-actions/
-│       ├── adapter-ci.yml
-│   └── test-and-release.yml
-├── test/
+    │   ├── CHANGELOG_OLD.md
+    │   └── README-changelog-section.md
+    ├── release/releaseconfig.json
+    └── github-actions/
+        ├── adapter-ci.yml
+        └── test-and-release.yml
+└── test/
 │   ├── fixtures/
 │   │   ├── translations/
 │   │   └── release/
