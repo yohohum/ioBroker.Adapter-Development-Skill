@@ -8,6 +8,7 @@ import { validateDeployCondition, validateDeployNeeds } from './deploy-condition
 export const REQUIRED_JOBS = ['check-and-lint', 'adapter-tests', 'deploy'];
 export const REQUIRED_NODE_VERSIONS = ['22', '24', '26'];
 export const REQUIRED_OS = ['ubuntu-latest', 'windows-latest', 'macos-latest'];
+export { validateWorkflowActions } from './action-refs.mjs';
 
 function checkRequiredJobs(jobs, wfName, errors) {
     for (const jobName of REQUIRED_JOBS) {

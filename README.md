@@ -66,7 +66,7 @@
 │       ├── action-refs.mjs
 │       ├── deploy-condition.mjs
 │       └── publish-workflow.mjs
-└── templates/
+├── templates/
     ├── adapter-tests/
     │   ├── testPackageFiles.cjs
     │   └── testAdapter.integration.cjs
@@ -78,10 +78,10 @@
         ├── adapter-ci.yml
         └── test-and-release.yml
 └── test/
-│   ├── fixtures/
-│   │   ├── translations/
-│   │   └── release/
-│   └── run-regression-tests.mjs
+    ├── fixtures/
+    │   ├── translations/
+    │   └── release/
+    └── run-regression-tests.mjs
 ```
 
 ## Что проверяет Skill
@@ -93,6 +93,10 @@
 - changelog, release-script и конфигурацию npm Trusted Publishing.
 
 Скрипты — дополнительный контроль, а не замена `@iobroker/testing`, `@iobroker/repochecker`, Adapter Checker или ручного тестирования оборудования.
+
+### Проверка GitHub Actions релиза
+
+В стандартном профиле `create-adapter-default` разрешён allowlist: `actions/checkout@v6`, `actions/setup-node@v6`, `ioBroker/testing-action-check@v2`, `ioBroker/testing-action-adapter@v1` и `ioBroker/testing-action-deploy@v1`. Ref сверяется целиком с политикой; ветки, отсутствующий ref, неизвестные Actions и reusable workflows отклоняются. Для Action inputs проверяются допустимые имена и обязательные значения по официальному `action.yml`. Неизвестные выражения требуют ручной проверки и не считаются PASS. Пользовательский workflow можно проверять как `custom-approved`, но это не добавляет автоматически разрешения Actions: исключение должно быть проверено и явно добавлено в централизованную политику вместе с источником и контрактом. FAIL означает обнаруженное нарушение, NEEDS REVIEW — безопасность автоматически не подтверждена.
 
 ## Установка в репозиторий агента
 

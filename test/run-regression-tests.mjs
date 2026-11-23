@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
+import { load as loadYaml } from 'js-yaml';
+import { validateWorkflowActions } from '../scripts/lib/action-refs.mjs';
 
 const TEST_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname));
 const SKILL_ROOT = path.resolve(TEST_ROOT, '..');
@@ -540,6 +542,72 @@ for (const [label, action, replacement] of [
     assertExitCode(result, 1, `Непроверенный Action ref ${label} должен быть отклонён`);
   });
 }
+
+for (const [label, from, to] of [
+  ['checkout @main', 'actions/checkout@v6', 'actions/checkout@main'],
+  ['checkout @master', 'actions/checkout@v6', 'actions/checkout@master'],
+  ['setup-node @main', 'actions/setup-node@v6', 'actions/setup-node@main'],
+  ['setup-node @master', 'actions/setup-node@v6', 'actions/setup-node@master'],
+  ['checkout missing ref', 'actions/checkout@v6', 'actions/checkout'],
+  ['setup-node unknown major', 'actions/setup-node@v6', 'actions/setup-node@v99'],
+]) {
+  test(`Built-in Action ref ${label} — FAIL`, () => {
+    const result = runReleaseWithWorkflowMutation((yaml) => yaml.replace(from, to));
+    assertExitCode(result, 1, `${label} должен быть отклонён`);
+  });
+}
+
+for (const [label, injection] of [
+  ['unknown external action', '      - uses: evil/example-action@v1\n'],
+  ['new external action in steps', '      - uses: actions/upload-artifact@v6\n        with:\n          name: release\n'],
+]) {
+  test(`${label} — FAIL`, () => {
+    const result = runReleaseWithWorkflowMutation((yaml) => yaml.replace(
+      '      - name: Checkout source\n', `${injection}      - name: Checkout source\n`
+    ));
+    assertExitCode(result, 1, `${label} должен быть отклонён`);
+  });
+}
+
+for (const [label, uses] of [
+  ['pinned reusable workflow', 'owner/repo/.github/workflows/release.yml@v1'],
+  ['unpinned reusable workflow', 'owner/repo/.github/workflows/release.yml@main'],
+]) {
+  test(`${label} job-level uses — FAIL`, () => {
+    const result = runReleaseWithWorkflowMutation((yaml) => yaml.replace(
+      '  deploy:\n', `  nested:\n    uses: ${uses}\n\n  deploy:\n`
+    ));
+    assertExitCode(result, 1, `${label} должен быть отклонён`);
+  });
+}
+
+test('Action с отсутствующим обязательным input — FAIL', () => {
+  const result = runReleaseWithWorkflowMutation((yaml) => yaml.replace(
+    "          node-version: '22.x'\n\n  adapter-tests:", '\n  adapter-tests:'
+  ));
+  assertExitCode(result, 1, 'Отсутствующий node-version у check action должен быть отклонён');
+});
+
+test('Action с неподдерживаемым input — FAIL', () => {
+  const result = runReleaseWithWorkflowMutation((yaml) => yaml.replace(
+    "          node-version: '22.x'\n\n  adapter-tests:", "          node-version: '22.x'\n          unsupported-input: value\n\n  adapter-tests:"
+  ));
+  assertExitCode(result, 1, 'Неподдерживаемый input должен быть отклонён');
+});
+
+test('Action с некорректным input value — FAIL', () => {
+  const result = runReleaseWithWorkflowMutation((yaml) => yaml.replace(
+    "node-version: '22.x'", "node-version: 'banana'"
+  ));
+  assertExitCode(result, 1, 'Некорректный node-version должен быть отклонён');
+});
+
+test('Все разрешённые Actions official workflow проходят общий allowlist — PASS', () => {
+  const yaml = requireFixture('release/correct/.github/workflows/test-and-release.yml');
+  const workflow = loadYaml(fs.readFileSync(yaml, 'utf8'));
+  const result = validateWorkflowActions(workflow.jobs, 'positive official workflow', { requireIoBrokerActions: true });
+  assertEqual(result.errors.length, 0, 'Разрешённые actions не должны давать ошибки');
+});
 
 console.log('\n=== Защита от повторного появления дефектов ===\n');
 

@@ -4,8 +4,9 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { load as loadYaml } from 'js-yaml';
-import { validatePublishWorkflow } from './lib/publish-workflow.mjs';
+import { validatePublishWorkflow, validateWorkflowActions } from './lib/publish-workflow.mjs';
 import { validateDeployCondition } from './lib/deploy-condition.mjs';
+import { OFFICIAL_ACTIONS } from './lib/action-refs.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const required = [
@@ -75,6 +76,19 @@ for (const relative of yamlFiles) {
     } catch (error) {
         failed = true;
         console.error(`Invalid YAML in ${relative}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+for (const workflowPath of ['.github/workflows/validate-skill.yml', 'templates/github-actions/adapter-ci.yml', 'templates/github-actions/test-and-release.yml']) {
+    try {
+        const workflow = loadYaml(fs.readFileSync(path.join(root, workflowPath), 'utf8'));
+        const actions = validateWorkflowActions(workflow.jobs ?? {}, workflowPath, { requireIoBrokerActions: workflowPath.includes('test-and-release') });
+        if (actions.errors.length) {
+            failed = true;
+            for (const error of actions.errors) console.error(error);
+        }
+    } catch (error) {
+        failed = true;
+        console.error(`Не удалось проверить Actions в ${workflowPath}: ${error instanceof Error ? error.message : String(error)}`);
     }
 }
 // Прочие YAML/JSON workflow fixtures также валидируются, за исключением
@@ -218,6 +232,13 @@ if (!deployValidatorSource.includes('matchesOfficialDeployCondition') ||
     failed = true;
     console.error('Общий валидатор deploy condition не содержит структурную проверку официальной схемы и status-check функций.');
 }
+const actionPolicySource = fs.readFileSync(path.join(root, 'scripts/lib/action-refs.mjs'), 'utf8');
+if (!actionPolicySource.includes('validateWorkflowActions') ||
+    !actionPolicySource.includes('validateRequiredActions') ||
+    !['actions/checkout', 'actions/setup-node', 'ioBroker/testing-action-check', 'ioBroker/testing-action-adapter', 'ioBroker/testing-action-deploy'].every((name) => OFFICIAL_ACTIONS.some((item) => item.name === name))) {
+    failed = true;
+    console.error('Централизованная политика не содержит все Actions официального шаблона или общий workflow validator.');
+}
 const testReleasePath = path.join(root, 'templates/github-actions/test-and-release.yml');
 let testReleaseYaml;
 try {
@@ -241,6 +262,31 @@ if (!testReleaseYaml) {
     }
     for (const warning of result.warnings) {
         console.warn(`WARN  ${warning}`);
+    }
+}
+
+// README code fences contain the canonical package scripts and executable paths.
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+for (const readme of ['README.md', 'README.en.md']) {
+    const content = fs.readFileSync(path.join(root, readme), 'utf8');
+    const codeFences = [...content.matchAll(/```(?:bash|sh)\s*\n([\s\S]*?)```/g)].map((match) => match[1]);
+    for (const block of codeFences) {
+        for (const match of block.matchAll(/\bnpm\s+(?:run\s+)?([a-zA-Z0-9:_-]+)/g)) {
+            const scriptName = match[1];
+            if (['ci', 'install', 'test', 'start', 'publish', 'init', 'add', 'commit', 'branch', 'remote', 'push', 'run'].includes(scriptName)) continue;
+            if (!Object.hasOwn(packageJson.scripts ?? {}, scriptName)) {
+                failed = true;
+                console.error(`${readme}: npm script "${scriptName}" из code block отсутствует в package.json.`);
+            }
+        }
+        for (const match of block.matchAll(/(?:bash|node)\s+(\/path\/to\/skill\/)?([\w./-]+\.(?:sh|mjs|js))/g)) {
+            const scriptPath = match[2];
+            if (scriptPath.startsWith('/path/to/skill/')) continue;
+            if (!fs.existsSync(path.join(root, scriptPath))) {
+                failed = true;
+                console.error(`${readme}: script "${scriptPath}" из code block не существует.`);
+            }
+        }
     }
 }
 

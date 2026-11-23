@@ -67,7 +67,7 @@ Official ioBroker documentation and schemas are the single source of truth for A
 │       ├── action-refs.mjs
 │       ├── deploy-condition.mjs
 │       └── publish-workflow.mjs
-└── templates/
+├── templates/
     ├── adapter-tests/
     │   ├── testPackageFiles.cjs
     │   └── testAdapter.integration.cjs
@@ -79,10 +79,10 @@ Official ioBroker documentation and schemas are the single source of truth for A
         ├── adapter-ci.yml
         └── test-and-release.yml
 └── test/
-│   ├── fixtures/
-│   │   ├── translations/
-│   │   └── release/
-│   └── run-regression-tests.mjs
+    ├── fixtures/
+    │   ├── translations/
+    │   └── release/
+    └── run-regression-tests.mjs
 ```
 
 ## What the Skill checks
@@ -94,6 +94,10 @@ Official ioBroker documentation and schemas are the single source of truth for A
 - changelog, release-script, and npm Trusted Publishing configuration.
 
 Scripts are additional control, not a replacement for `@iobroker/testing`, `@iobroker/repochecker`, Adapter Checker, or manual hardware testing.
+
+### GitHub Actions release checks
+
+The `create-adapter-default` profile uses an explicit allowlist: `actions/checkout@v6`, `actions/setup-node@v6`, `ioBroker/testing-action-check@v2`, `ioBroker/testing-action-adapter@v1`, and `ioBroker/testing-action-deploy@v1`. Refs are matched exactly; branches, missing refs, unknown Actions, and reusable workflows are rejected. Inputs are checked against supported names and required values from each official `action.yml`. Unknown expressions require manual review and never count as PASS. A user workflow can use `custom-approved`, but that profile does not automatically allow new Actions: any exception must be reviewed and explicitly added to the centralized policy with its source and input contract. FAIL means a violation was detected; NEEDS REVIEW means safety could not be confirmed automatically.
 
 ## Installation in the agent repository
 
