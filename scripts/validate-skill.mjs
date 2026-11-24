@@ -140,7 +140,7 @@ for (const file of markdownFiles) {
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        if (line.includes('npm-publish.yml') && !/(не\s+использу|НЕ\s+использу|not\s+use|не\s+создава|НЕ\s+создава|do\s+not\s+create)/i.test(line)) {
+        if (line.includes('npm-publish.yml') && !/(не\s+использу|НЕ\s+использу|не\s+утвержда|НЕ\s+утвержда|не\s+поддержива|НЕ\s+поддержива|not\s+use|does\s+not\s+approve|not\s+supported|не\s+создава|НЕ\s+создава|do\s+not\s+create)/i.test(line)) {
             failed = true;
             console.error(`Ссылка на несуществующий npm-publish.yml в ${path.relative(root, file)} (строка ${i + 1})`);
         }
@@ -389,8 +389,8 @@ if (!/check-translations\.mjs.*--mode=new/.test(runChecksContent)) {
     console.error('scripts/run-adapter-checks.sh не вызывает scripts/check-translations.mjs с --mode=new');
 }
 
-// 14. release-preflight.mjs корректно обрабатывает npm-publish.yml только для custom-approved
-// (проверка уже встроена в release-preflight.mjs itself)
+// 14. custom-approved не является обходом стандартного release workflow:
+// release-preflight проверяет тот же test-and-release.yml и отклоняет npm-publish.yml.
 
 // 15. Определение режима локализации не использует Git history, возраст или число коммитов
 for (const forbidden of ['git log', 'commitCount', 'rev-list', 'git rev-parse']) {

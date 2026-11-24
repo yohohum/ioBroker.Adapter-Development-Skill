@@ -5,6 +5,7 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { load as loadYaml } from 'js-yaml';
 import { validatePublishWorkflow as validateWorkflow, validateWorkflowFile } from './lib/publish-workflow.mjs';
+import { readVerifiedText } from './lib/action-refs.mjs';
 
 const VALID_PROFILES = ['create-adapter-default', 'custom-approved'];
 
@@ -120,27 +121,21 @@ if (profile === 'create-adapter-default' || profile === null) {
 
 // --- Профиль custom-approved ---
 if (profile === 'custom-approved') {
-    const hasCustomReleaseDoc = fs.existsSync(path.join(root, 'docs', 'RELEASE.md')) ||
-        fs.existsSync(path.join(root, 'RELEASE.md')) ||
-        (pkg.scripts?.release && String(pkg.scripts.release).includes('release-script'));
-    if (!hasCustomReleaseDoc) {
-        reviewNeeded.push('Профиль custom-approved требует документированного описания альтернативного механизма релиза (docs/RELEASE.md или scripts.release).');
-    }
-    // Даже в custom-approved проверяются все инварианты
+    // The profile does not approve an alternative publication workflow. It
+    // applies the same workflow and Action policy as the standard profile.
     if (!pkg.version || !ioPkg.common?.version) {
         errors.push('Не удаётся проверить версию: отсутствует package.json version или io-package.json common.version.');
     }
 
-    // Проверка любого найденного workflow публикации
     const testAndReleasePath = path.join(root, '.github/workflows/test-and-release.yml');
     const npmPublishPath = path.join(root, '.github/workflows/npm-publish.yml');
-    const workflowsToCheck = [testAndReleasePath, npmPublishPath].filter(p => fs.existsSync(p));
-    if (workflowsToCheck.length === 0) {
-        reviewNeeded.push('No publishing workflow found; verify custom release process.');
+    if (fs.existsSync(npmPublishPath)) {
+        errors.push('.github/workflows/npm-publish.yml не поддерживается в профиле custom-approved; используйте стандартный test-and-release.yml.');
+    }
+    if (!fs.existsSync(testAndReleasePath)) {
+        errors.push('No publishing workflow found: .github/workflows/test-and-release.yml (обязателен также для профиля custom-approved).');
     } else {
-        for (const wf of workflowsToCheck) {
-            validatePublishWorkflow(wf, 'custom-approved');
-        }
+        validatePublishWorkflow(testAndReleasePath, 'custom-approved');
     }
 }
 
@@ -156,7 +151,7 @@ function validatePublishWorkflow(wfPath, profileName) {
     warnings.push(...actionResult.warnings);
     reviewNeeded.push(...actionResult.reviews);
     try {
-        const workflow = loadYaml(fs.readFileSync(wfPath, 'utf8'));
+        const workflow = loadYaml(readVerifiedText(root, wfPath));
         // validateWorkflowFile() выше уже рекурсивно проверила локальные
         // reusable workflows (включая job-level uses: ./...). Второй этап
         // оставляет все проверки публикации, но не отвергает локальные

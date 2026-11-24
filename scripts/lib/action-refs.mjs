@@ -198,7 +198,6 @@ export function validateWorkflowFile(workflowPath, { root = process.cwd(), requi
             return;
         }
         const resolved = check.realPath ?? path.resolve(filePath);
-        const relative = path.relative(path.resolve(root), resolved);
         if (chain.includes(resolved)) {
             errors.push(`${path.relative(root, resolved)}: reusable workflow cycle detected: ${chain.map((item) => path.relative(root, item)).join(' -> ')} -> ${path.relative(root, resolved)}.`);
             return;
@@ -207,7 +206,7 @@ export function validateWorkflowFile(workflowPath, { root = process.cwd(), requi
         visited.add(resolved);
         let workflow;
         try {
-            workflow = loadYaml(fs.readFileSync(resolved, 'utf8'), { schema: JSON_SCHEMA });
+            workflow = loadYaml(readVerifiedText(root, resolved), { schema: JSON_SCHEMA });
         } catch (error) {
             errors.push(`${path.relative(root, resolved)}: invalid/duplicate-key YAML: ${error instanceof Error ? error.message : String(error)}`);
             return;
@@ -238,7 +237,7 @@ export function validateWorkflowFile(workflowPath, { root = process.cwd(), requi
             if (job?.uses && typeof job.uses === 'string' && job.uses.startsWith('./')) {
                 const local = resolveLocalWorkflow(root, resolved, job.uses, wfName, jobName, errors);
                 if (local) {
-                    validateReusableInputs(job, local, wfName, jobName, errors);
+                    validateReusableInputs(root, job, local, wfName, jobName, errors);
                     readWorkflow(local, [...chain, resolved]);
                 }
             }
@@ -264,7 +263,7 @@ export function validateWorkflowFile(workflowPath, { root = process.cwd(), requi
 
     function inspectCompositeAction(metadataPath, sourceWorkflow, location, chain, suppliedInputs = {}) {
         let metadata;
-        try { metadata = loadYaml(fs.readFileSync(metadataPath, 'utf8'), { schema: JSON_SCHEMA }); }
+        try { metadata = loadYaml(readVerifiedText(root, metadataPath), { schema: JSON_SCHEMA }); }
         catch (error) {
             errors.push(`${path.relative(root, metadataPath)}: invalid/duplicate-key action YAML: ${error instanceof Error ? error.message : String(error)}`);
             return;
@@ -359,9 +358,9 @@ function resolveActionMetadata(root, actionDir) {
     return { error: 'has no action.yml/action.yaml' };
 }
 
-function validateReusableInputs(job, target, wfName, jobName, errors) {
+function validateReusableInputs(root, job, target, wfName, jobName, errors) {
     let child;
-    try { child = loadYaml(fs.readFileSync(target, 'utf8'), { schema: JSON_SCHEMA }); }
+    try { child = loadYaml(readVerifiedText(root, target), { schema: JSON_SCHEMA }); }
     catch (error) {
         errors.push(`${wfName}: local reusable workflow job "${jobName}" has invalid YAML: ${error instanceof Error ? error.message : String(error)}`);
         return;
@@ -429,14 +428,51 @@ function isPathInsideRoot(root, target) {
     try {
         realTarget = fs.realpathSync(resolvedTarget);
     } catch (error) {
-        return { inside: false, reason: `path does not exist or is a dangling symlink: ${error.message}` };
+        if (error?.code === 'ELOOP') return { inside: false, reason: `symlink cycle detected: ${error.message}` };
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+            return { inside: false, reason: `path does not exist or is a dangling symlink: ${error.message}` };
+        }
+        return { inside: false, reason: `cannot resolve filesystem path: ${error.message}` };
     }
     const relative = path.relative(realRoot, realTarget);
     if (relative === '') return { inside: true, realPath: realTarget };
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
         return { inside: false, reason: 'escapes repository root' };
     }
     return { inside: true, realPath: realTarget };
+}
+
+/**
+ * Opens and reads the canonical path after resolving it again immediately
+ * before opening. fstat/stat identity checks catch replacement of the opened
+ * path during the check/open window. This does not prevent a concurrent write
+ * to the same inode; the validator is intended for a local, trusted checkout.
+ */
+export function readVerifiedText(root, target) {
+    const first = isPathInsideRoot(root, target);
+    if (!first.inside) throw new Error(`path is not safely inside repository root (${first.reason})`);
+    const canonical = first.realPath;
+    const second = isPathInsideRoot(root, target);
+    if (!second.inside || second.realPath !== canonical) {
+        throw new Error(`path changed while resolving symlinks (${second.reason ?? 'realpath changed'})`);
+    }
+    let flags = fs.constants.O_RDONLY;
+    if (typeof fs.constants.O_NOFOLLOW === 'number') flags |= fs.constants.O_NOFOLLOW;
+    const fd = fs.openSync(canonical, flags);
+    try {
+        const opened = fs.fstatSync(fd);
+        const current = fs.statSync(canonical);
+        if (opened.dev !== current.dev || opened.ino !== current.ino) {
+            throw new Error('path changed between open and verification');
+        }
+        const after = isPathInsideRoot(root, target);
+        if (!after.inside || after.realPath !== canonical) {
+            throw new Error(`path changed while reading (${after.reason ?? 'realpath changed'})`);
+        }
+        return fs.readFileSync(fd, 'utf8');
+    } finally {
+        fs.closeSync(fd);
+    }
 }
 
 export function validateRequiredActions(jobs, wfName = 'workflow', options = {}) {

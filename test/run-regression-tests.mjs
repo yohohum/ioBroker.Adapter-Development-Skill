@@ -5,7 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { load as loadYaml } from 'js-yaml';
-import { validateWorkflowActions, validateWorkflowFile } from '../scripts/lib/action-refs.mjs';
+import { readVerifiedText, validateWorkflowActions, validateWorkflowFile } from '../scripts/lib/action-refs.mjs';
 
 const TEST_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname));
 const SKILL_ROOT = path.resolve(TEST_ROOT, '..');
@@ -13,9 +13,7 @@ const FIXTURES_DIR = path.join(TEST_ROOT, 'fixtures');
 const CHECK_TRANSLATIONS = path.join(SKILL_ROOT, 'scripts/check-translations.mjs');
 const RELEASE_PREFLIGHT = path.join(SKILL_ROOT, 'scripts/release-preflight.mjs');
 
-let passed = 0;
-let failed = 0;
-let skipped = 0;
+const testStats = createTestStats();
 
 function runCommand(cmd, args, cwd) {
   const result = spawnSync(cmd, args, { cwd: cwd || TEST_ROOT, encoding: 'utf8', timeout: 120000 });
@@ -25,20 +23,42 @@ function runCommand(cmd, args, cwd) {
   return { code: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
-function test(name, fn) {
+function executeTest(fn) {
   try {
     const outcome = fn();
-    if (outcome?.skipped) {
-      console.log(`  SKIPPED: ${name} — ${outcome.skipped}`);
-      skipped++;
-      return;
-    }
-    console.log(`  PASS: ${name}`);
-    passed++;
+    if (outcome?.status === 'SKIP') return { status: 'SKIP', reason: outcome.reason || 'причина не указана' };
+    return { status: 'PASS' };
   } catch (error) {
-    console.log(`  FAIL: ${name} — ${error.message}`);
-    failed++;
+    return { status: 'FAIL', reason: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function createTestStats() {
+  return { total: 0, passed: 0, failed: 0, skipped: 0 };
+}
+
+function recordTest(stats, result) {
+  stats.total++;
+  if (result.status === 'PASS') stats.passed++;
+  else if (result.status === 'FAIL') stats.failed++;
+  else if (result.status === 'SKIP') stats.skipped++;
+  else throw new Error(`Unknown test status: ${result.status}`);
+}
+
+function testExitCode(stats) {
+  return stats.failed > 0 ? 1 : 0;
+}
+
+function formatTestResult(name, result) {
+  if (result.status === 'SKIP') return `  SKIP: ${name} — ${result.reason}`;
+  if (result.status === 'FAIL') return `  FAIL: ${name} — ${result.reason}`;
+  return `  PASS: ${name}`;
+}
+
+function test(name, fn) {
+  const result = executeTest(fn);
+  recordTest(testStats, result);
+  console.log(formatTestResult(name, result));
 }
 
 function assertEqual(actual, expected, msg) {
@@ -704,8 +724,14 @@ function withSymlinkFixture(name, configure, fn) {
     fs.mkdirSync(path.join(root, '.github/workflows'), { recursive: true });
     fs.mkdirSync(path.join(root, '.github/actions'), { recursive: true });
     const supported = configure(root, outside);
-    if (!supported) {
-      return { skipped: 'окружение не разрешает создание символических ссылок' };
+    if (supported?.skipReason) {
+      if (process.platform === 'linux') {
+        throw new Error(`Linux CI must support symlink tests; ${supported.skipReason}`);
+      }
+      return { status: 'SKIP', reason: supported.skipReason };
+    }
+    if (supported !== true) {
+      throw new Error('Symlink setup must return true or an explicit skip reason');
     }
     return fn(root, outside);
   } finally {
@@ -720,7 +746,9 @@ function createSymlinkOrSkip(target, linkPath, type) {
     fs.symlinkSync(target, linkPath, type);
     return true;
   } catch (error) {
-    if (['EPERM', 'EACCES', 'ENOTSUP', 'EINVAL'].includes(error?.code)) return false;
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EINVAL'].includes(error?.code)) {
+      return { skipReason: `${error.code}: ${error.message}` };
+    }
     throw error;
   }
 }
@@ -742,6 +770,22 @@ for (const [label, configure, expected] of [
     return createSymlinkOrSkip(path.join(outside, 'inner.yml'), path.join(root, '.github/actions/outer/inner'), 'file');
   }, 'nested local Action path'],
   ['dangling target', (root, outside) => createSymlinkOrSkip(path.join(outside, 'missing.yml'), path.join(root, '.github/workflows/reusable.yml'), 'file'), 'path does not exist or is a dangling symlink'],
+  ['symlink cycle', (root) => {
+    const first = path.join(root, '.github/workflows/loop-a');
+    const second = path.join(root, '.github/workflows/loop-b');
+    const one = createSymlinkOrSkip(second, first, 'file');
+    if (one !== true) return one;
+    const two = createSymlinkOrSkip(first, second, 'file');
+    if (two !== true) return two;
+    return createSymlinkOrSkip(first, path.join(root, '.github/workflows/reusable.yml'), 'file');
+  }, 'symlink cycle detected'],
+  ['intermediate directory target', (root, outside) => {
+    fs.mkdirSync(path.join(outside, 'workflow-dir'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'workflow-dir/reusable.yml'), 'name: outside\njobs: {}\n');
+    const linkResult = createSymlinkOrSkip(path.join(outside, 'workflow-dir'), path.join(root, '.github/workflows/external-dir'), 'dir');
+    if (linkResult !== true) return linkResult;
+    return createSymlinkOrSkip(path.join(root, '.github/workflows/external-dir/reusable.yml'), path.join(root, '.github/workflows/reusable.yml'), 'file');
+  }, 'escapes repository root'],
   ['similar directory name', (root, outside) => {
     const evil = `${root}-evil`;
     fs.mkdirSync(evil, { recursive: true });
@@ -750,7 +794,7 @@ for (const [label, configure, expected] of [
   }, 'escapes repository root'],
 ]) {
   test(`Symlink ${label} — FAIL`, () => {
-    withSymlinkFixture(label.replace(/\s+/g, '-'), configure, (root) => {
+    return withSymlinkFixture(label.replace(/\s+/g, '-'), configure, (root) => {
       const workflow = path.join(root, '.github/workflows/main.yml');
       let workflowText;
       if (label.includes('composite')) {
@@ -769,7 +813,7 @@ for (const [label, configure, expected] of [
 }
 
 test('Внутренний symlink разрешается только после проверки realpath — PASS', () => {
-  withSymlinkFixture('internal', (root) => {
+  return withSymlinkFixture('internal', (root) => {
     fs.mkdirSync(path.join(root, 'actions/real'), { recursive: true });
     fs.writeFileSync(path.join(root, 'actions/real/action.yml'), 'name: real\nruns:\n  using: composite\n  steps: []\n');
     return createSymlinkOrSkip(path.join(root, 'actions/real'), path.join(root, '.github/actions/internal'), 'dir');
@@ -797,6 +841,101 @@ test('custom-approved не расширяет allowlist и не влияет н�
     assertEqual(after.errors.length > 0, true, 'Custom profile must not leak permission to subsequent standard validation');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('custom-approved принимает только стандартный test-and-release workflow', () => {
+  const result = runRelease('release/correct', 'custom-approved');
+  assertExitCode(result, 0, 'Корректный стандартный workflow должен пройти в custom-approved');
+});
+
+test('custom-approved отклоняет альтернативный npm-publish workflow', () => {
+  const source = requireFixture('release/correct');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-custom-npm-publish-'));
+  fs.cpSync(source, temp, { recursive: true });
+  try {
+    const alternate = path.join(temp, '.github/workflows/npm-publish.yml');
+    fs.writeFileSync(alternate, 'name: npm publish\non:\n  push:\n    tags: ["v*"]\njobs:\n  publish:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm publish\n');
+    const result = runCommand('node', [RELEASE_PREFLIGHT, temp, '--profile=custom-approved', '--no-git-check']);
+    assertExitCode(result, 1, 'custom-approved должен отклонять альтернативный npm-publish.yml');
+    assertContains(result.stdout + result.stderr, 'npm-publish.yml не поддерживается', 'Диагностика должна указывать на неподдерживаемый workflow');
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('Тестовый классификатор возвращает PASS, FAIL и SKIP с причиной', () => {
+  const pass = executeTest(() => undefined);
+  const fail = executeTest(() => { throw new Error('expected failure'); });
+  const skip = executeTest(() => ({ status: 'SKIP', reason: 'explicit test reason' }));
+  assertEqual(pass.status, 'PASS', 'Обычный тест должен классифицироваться как PASS');
+  assertEqual(fail.status, 'FAIL', 'Исключение должно классифицироваться как FAIL');
+  assertEqual(skip.status, 'SKIP', 'Явный результат skipped должен классифицироваться как SKIP');
+  assertEqual(skip.reason, 'explicit test reason', 'Причина SKIP должна сохраняться');
+  assertContains(formatTestResult('skip-case', skip), 'explicit test reason', 'Причина SKIP должна выводиться');
+  assertEqual(pass.status === 'PASS' && skip.status !== 'PASS', true, 'SKIP не должен увеличивать PASS');
+  const stats = createTestStats();
+  recordTest(stats, pass);
+  recordTest(stats, fail);
+  recordTest(stats, skip);
+  assertEqual(stats.total, 3, 'Общее количество должно включать PASS, FAIL и SKIP');
+  assertEqual(stats.passed, 1, 'PASS учитывается отдельно');
+  assertEqual(stats.failed, 1, 'FAIL учитывается отдельно');
+  assertEqual(stats.skipped, 1, 'SKIP не включается в PASS');
+  assertEqual(testExitCode(stats), 1, 'FAIL должен приводить к ненулевому exit code');
+  assertEqual(testExitCode({ ...stats, failed: 0 }), 0, 'Допустимый SKIP без FAIL не должен проваливать suite');
+});
+
+test('Невозможно безопасно прочитать отсутствующий файл — FAIL, не PASS', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-verified-read-'));
+  try {
+    let thrown = false;
+    try { readVerifiedText(root, path.join(root, 'missing.yml')); }
+    catch { thrown = true; }
+    assertEqual(thrown, true, 'Ошибка безопасного чтения должна быть явной');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Verified reader читает обычный файл и внутренний symlink', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-verified-internal-'));
+  try {
+    fs.writeFileSync(path.join(root, 'actual.yml'), 'name: checked\n');
+    assertEqual(readVerifiedText(root, 'actual.yml'), 'name: checked\n', 'Обычный внутренний путь должен читаться');
+    const link = path.join(root, 'linked.yml');
+    try {
+      fs.symlinkSync(path.join(root, 'actual.yml'), link, 'file');
+    } catch (error) {
+      if (process.platform === 'linux') throw error;
+      return { status: 'SKIP', reason: `${error.code}: internal symlink unavailable on this platform` };
+    }
+    assertEqual(readVerifiedText(root, link), 'name: checked\n', 'Внутренний symlink должен разрешаться в проверенный realpath');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Verified reader отказывает внешнему symlink до чтения target', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-verified-outside-root-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-verified-outside-file-'));
+  try {
+    const external = path.join(outside, 'secret.yml');
+    const link = path.join(root, 'linked.yml');
+    fs.writeFileSync(external, 'name: outside-content\n');
+    try {
+      fs.symlinkSync(external, link, 'file');
+    } catch (error) {
+      if (process.platform === 'linux') throw error;
+      return { status: 'SKIP', reason: `${error.code}: symlink creation unavailable on this platform` };
+    }
+    let thrown = false;
+    try { readVerifiedText(root, link); }
+    catch { thrown = true; }
+    assertEqual(thrown, true, 'Внешний symlink должен быть отклонён перед чтением target');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
   }
 });
 
@@ -1030,8 +1169,9 @@ test('56. run-adapter-checks.sh использует строгий --mode=new',
 });
 
 console.log('\n=== Итог ===');
-console.log(`  Пройдено: ${passed}`);
-console.log(`  Провалено: ${failed}`);
-console.log(`  Пропущено: ${skipped}`);
-if (failed > 0) process.exit(1);
+console.log(`  Всего: ${testStats.total}`);
+console.log(`  PASS: ${testStats.passed}`);
+console.log(`  FAIL: ${testStats.failed}`);
+console.log(`  SKIP: ${testStats.skipped}`);
+if (testExitCode(testStats) !== 0) process.exit(1);
 console.log('\nВсе тесты пройдены!');
