@@ -1,0 +1,16 @@
+name: my-composite
+description: Local composite action for testing
+inputs:
+  node-version:
+    description: Node.js version to install
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Checkout source
+      uses: actions/checkout@v6
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: ${{ inputs.node-version }}
+        registry-url: 'https://registry.npmjs.org'

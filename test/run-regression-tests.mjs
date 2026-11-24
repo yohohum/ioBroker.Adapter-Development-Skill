@@ -15,6 +15,7 @@ const RELEASE_PREFLIGHT = path.join(SKILL_ROOT, 'scripts/release-preflight.mjs')
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
 
 function runCommand(cmd, args, cwd) {
   const result = spawnSync(cmd, args, { cwd: cwd || TEST_ROOT, encoding: 'utf8', timeout: 120000 });
@@ -26,7 +27,12 @@ function runCommand(cmd, args, cwd) {
 
 function test(name, fn) {
   try {
-    fn();
+    const outcome = fn();
+    if (outcome?.skipped) {
+      console.log(`  SKIPPED: ${name} — ${outcome.skipped}`);
+      skipped++;
+      return;
+    }
     console.log(`  PASS: ${name}`);
     passed++;
   } catch (error) {
@@ -521,6 +527,27 @@ function runReleaseLocalReusable({ mutateMain, mutateReusable, extraFiles } = {}
   }
 }
 
+function runReleaseWithCompositeMutation({ mutateMain, mutateAction, extraFiles, removeFiles, profile = 'create-adapter-default' } = {}) {
+  const source = requireFixture('release/local-composite-correct');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-composite-'));
+  fs.cpSync(source, temp, { recursive: true });
+  const mainPath = path.join(temp, '.github/workflows/test-and-release.yml');
+  const actionPath = path.join(temp, '.github/actions/my-composite/action.yml');
+  if (mutateMain) fs.writeFileSync(mainPath, mutateMain(fs.readFileSync(mainPath, 'utf8')));
+  if (mutateAction) fs.writeFileSync(actionPath, mutateAction(fs.readFileSync(actionPath, 'utf8')));
+  for (const [relative, content] of Object.entries(extraFiles ?? {})) {
+    const filePath = path.join(temp, relative);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content);
+  }
+  for (const relative of removeFiles ?? []) fs.rmSync(path.join(temp, relative), { recursive: true, force: true });
+  try {
+    return runCommand('node', [RELEASE_PREFLIGHT, temp, `--profile=${profile}`, '--no-git-check']);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+}
+
 test('57. Локальный reusable workflow проходит полный release-preflight — PASS', () => {
   const result = runReleaseLocalReusable({});
   assertExitCode(result, 0, 'Корректный локальный reusable workflow должен пройти полный release-preflight');
@@ -594,6 +621,183 @@ test('67. Корректный workflow не отклоняется повтор
   const broken = runReleaseLocalReusable({ mutateMain: (yaml) => yaml.replace("if: startsWith(github.ref, 'refs/tags/v')", 'if: always()') });
   assertExitCode(broken, 1, 'Проверка условия deploy должна всё ещё выполняться при повторной валидации');
   assertContains(broken.stdout + broken.stderr, 'always()', 'Сообщение должно указывать на небезопасное условие deploy');
+});
+
+console.log('\n=== Интеграционные тесты локальных composite actions ===\n');
+
+test('68. Локальный composite action проходит полный release-preflight — PASS', () => {
+  const result = runReleaseWithCompositeMutation();
+  assertExitCode(result, 0, 'Корректный local composite action должен пройти полный release-preflight');
+});
+
+for (const [label, mutateAction, expected] of [
+  ['unknown external Action', (yaml) => yaml.replace('actions/checkout@v6', 'evil/not-approved@v1'), 'evil/not-approved'],
+  ['floating @main ref', (yaml) => yaml.replace('actions/checkout@v6', 'actions/checkout@main'), 'неподтверждённый ref'],
+  ['missing Action ref', (yaml) => yaml.replace('actions/checkout@v6', 'actions/checkout'), 'некорректный uses'],
+  ['invalid YAML', () => 'name: [invalid\n', 'invalid/duplicate-key action YAML'],
+]) {
+  test(`Composite action ${label} — FAIL`, () => {
+    const result = runReleaseWithCompositeMutation({ mutateAction });
+    assertExitCode(result, 1, `${label} должен быть отклонён`);
+    assertContains(result.stdout + result.stderr, expected, `Диагностика должна указывать на ${label}`);
+  });
+}
+
+test('Composite action с неправильным input — FAIL', () => {
+  const result = runReleaseWithCompositeMutation({
+    mutateMain: (yaml) => yaml.replace("          node-version: '22.x'\n\n  adapter-tests:", "          node-version: '22.x'\n          unknown-input: true\n\n  adapter-tests:"),
+  });
+  assertExitCode(result, 1, 'Непредусмотренный input composite action должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'undeclared input', 'Диагностика должна указывать на неизвестный input');
+});
+
+test('Composite action без action.yml/action.yaml — FAIL', () => {
+  const result = runReleaseWithCompositeMutation({ removeFiles: ['.github/actions/my-composite/action.yml'] });
+  assertExitCode(result, 1, 'Отсутствующая metadata composite action должна быть ошибкой');
+  assertContains(result.stdout + result.stderr, 'has no action.yml/action.yaml', 'Диагностика должна указывать на отсутствующую metadata');
+});
+
+test('Composite action с отсутствующей локальной зависимостью — FAIL', () => {
+  const result = runReleaseWithCompositeMutation({
+    mutateAction: (yaml) => `${yaml}    - uses: ./.github/actions/missing\n`,
+  });
+  assertExitCode(result, 1, 'Отсутствующая локальная composite action должна быть ошибкой');
+  assertContains(result.stdout + result.stderr, 'path does not exist', 'Диагностика должна указывать на отсутствующую локальную зависимость');
+});
+
+test('Две composite actions с циклической ссылкой — FAIL', () => {
+  const result = runReleaseWithCompositeMutation({
+    mutateAction: (yaml) => yaml.replace('    - name: Setup Node.js', '    - uses: ./.github/actions/second\n    - name: Setup Node.js'),
+    extraFiles: {
+      '.github/actions/second/action.yml': 'name: second\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/actions/my-composite\n',
+    },
+  });
+  assertExitCode(result, 1, 'Циклическая composite action dependency должна быть ошибкой');
+  assertContains(result.stdout + result.stderr, 'cycle', 'Диагностика должна указывать на цикл');
+});
+
+test('Вложенный composite action с запрещённым Action — FAIL', () => {
+  const result = runReleaseWithCompositeMutation({
+    mutateAction: (yaml) => yaml.replace('    - name: Setup Node.js', '    - uses: ./.github/actions/inner\n    - name: Setup Node.js'),
+    extraFiles: {
+      '.github/actions/inner/action.yml': 'name: inner\nruns:\n  using: composite\n  steps:\n    - uses: evil/hidden-action@main\n',
+    },
+  });
+  assertExitCode(result, 1, 'Запрещённый Action во вложенной composite action должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'evil/hidden-action', 'Диагностика должна указывать на запрещённый Action');
+});
+
+test('Composite action за пределами корня репозитория — FAIL', () => {
+  const result = runReleaseWithCompositeMutation({
+    mutateAction: (yaml) => yaml.replace('    - name: Setup Node.js', '    - uses: ./../../../outside-action\n    - name: Setup Node.js'),
+  });
+  assertExitCode(result, 1, 'Путь composite action за пределами корня должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'escapes repository root', 'Диагностика должна указывать на выход за корень');
+});
+
+console.log('\n=== Интеграционные тесты symlink escape ===\n');
+
+function withSymlinkFixture(name, configure, fn) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `iob-skill-symlink-${name}-`));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), `iob-skill-outside-${name}-`));
+  try {
+    fs.mkdirSync(path.join(root, '.github/workflows'), { recursive: true });
+    fs.mkdirSync(path.join(root, '.github/actions'), { recursive: true });
+    const supported = configure(root, outside);
+    if (!supported) {
+      return { skipped: 'окружение не разрешает создание символических ссылок' };
+    }
+    return fn(root, outside);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(`${root}-evil`, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+}
+
+function createSymlinkOrSkip(target, linkPath, type) {
+  try {
+    fs.symlinkSync(target, linkPath, type);
+    return true;
+  } catch (error) {
+    if (['EPERM', 'EACCES', 'ENOTSUP', 'EINVAL'].includes(error?.code)) return false;
+    throw error;
+  }
+}
+
+for (const [label, configure, expected] of [
+  ['workflow external target', (root, outside) => {
+    fs.writeFileSync(path.join(outside, 'reusable.yml'), 'name: outside\njobs: {}\n');
+    return createSymlinkOrSkip(path.join(outside, 'reusable.yml'), path.join(root, '.github/workflows/reusable.yml'), 'file');
+  }, 'escapes repository root'],
+  ['composite external target', (root, outside) => {
+    fs.mkdirSync(path.join(outside, 'action'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'action/action.yml'), 'name: outside\nruns:\n  using: composite\n  steps: []\n');
+    return createSymlinkOrSkip(path.join(outside, 'action'), path.join(root, '.github/actions/external'), 'dir');
+  }, 'local Action path'],
+  ['nested external target', (root, outside) => {
+    fs.mkdirSync(path.join(root, '.github/actions/outer'), { recursive: true });
+    fs.writeFileSync(path.join(outside, 'inner.yml'), 'name: outside\nruns:\n  using: composite\n  steps: []\n');
+    fs.writeFileSync(path.join(root, '.github/actions/outer/action.yml'), 'name: outer\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/actions/outer/inner\n');
+    return createSymlinkOrSkip(path.join(outside, 'inner.yml'), path.join(root, '.github/actions/outer/inner'), 'file');
+  }, 'nested local Action path'],
+  ['dangling target', (root, outside) => createSymlinkOrSkip(path.join(outside, 'missing.yml'), path.join(root, '.github/workflows/reusable.yml'), 'file'), 'path does not exist or is a dangling symlink'],
+  ['similar directory name', (root, outside) => {
+    const evil = `${root}-evil`;
+    fs.mkdirSync(evil, { recursive: true });
+    fs.writeFileSync(path.join(evil, 'reusable.yml'), 'name: outside\njobs: {}\n');
+    return createSymlinkOrSkip(path.join(evil, 'reusable.yml'), path.join(root, '.github/workflows/reusable.yml'), 'file');
+  }, 'escapes repository root'],
+]) {
+  test(`Symlink ${label} — FAIL`, () => {
+    withSymlinkFixture(label.replace(/\s+/g, '-'), configure, (root) => {
+      const workflow = path.join(root, '.github/workflows/main.yml');
+      let workflowText;
+      if (label.includes('composite')) {
+        workflowText = 'name: test\non:\n  workflow_dispatch:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./.github/actions/external\n';
+      } else if (label.includes('nested')) {
+        workflowText = 'name: test\non:\n  workflow_dispatch:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./.github/actions/outer\n';
+      } else {
+        workflowText = 'name: test\non:\n  workflow_dispatch:\njobs:\n  call:\n    uses: ./.github/workflows/reusable.yml\n';
+      }
+      fs.writeFileSync(workflow, workflowText);
+      const result = validateWorkflowFile(workflow, { root });
+      assertEqual(result.errors.length > 0, true, 'Symlink escape must never pass');
+      assertContains(result.errors.join('\n'), expected, 'Symlink error should identify the reason');
+    });
+  });
+}
+
+test('Внутренний symlink разрешается только после проверки realpath — PASS', () => {
+  withSymlinkFixture('internal', (root) => {
+    fs.mkdirSync(path.join(root, 'actions/real'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'actions/real/action.yml'), 'name: real\nruns:\n  using: composite\n  steps: []\n');
+    return createSymlinkOrSkip(path.join(root, 'actions/real'), path.join(root, '.github/actions/internal'), 'dir');
+  }, (root) => {
+    const workflow = path.join(root, '.github/workflows/main.yml');
+    fs.writeFileSync(workflow, 'name: test\non:\n  workflow_dispatch:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ./.github/actions/internal\n');
+    const result = validateWorkflowFile(workflow, { root });
+    assertEqual(result.errors.length, 0, 'Internal symlink should pass after realpath validation');
+  });
+});
+
+console.log('\n=== Профили Action policy ===\n');
+
+test('custom-approved не расширяет allowlist и не влияет на стандартный профиль', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-profile-'));
+  try {
+    const workflow = path.join(root, '.github/workflows/main.yml');
+    fs.mkdirSync(path.dirname(workflow), { recursive: true });
+    fs.writeFileSync(workflow, 'name: test\non:\n  workflow_dispatch:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/example@v1\n');
+    const custom = validateWorkflowFile(workflow, { root, profile: 'custom-approved' });
+    const standard = validateWorkflowFile(workflow, { root, profile: 'create-adapter-default' });
+    assertEqual(custom.errors.length > 0, true, 'custom-approved must reject unknown Action without explicit policy support');
+    assertEqual(standard.errors.length > 0, true, 'Standard profile must reject unknown Action');
+    const after = validateWorkflowFile(workflow, { root, profile: 'create-adapter-default' });
+    assertEqual(after.errors.length > 0, true, 'Custom profile must not leak permission to subsequent standard validation');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 for (const [name, expression] of [
@@ -828,5 +1032,6 @@ test('56. run-adapter-checks.sh использует строгий --mode=new',
 console.log('\n=== Итог ===');
 console.log(`  Пройдено: ${passed}`);
 console.log(`  Провалено: ${failed}`);
+console.log(`  Пропущено: ${skipped}`);
 if (failed > 0) process.exit(1);
 console.log('\nВсе тесты пройдены!');

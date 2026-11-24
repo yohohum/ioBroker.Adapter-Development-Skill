@@ -192,12 +192,13 @@ export function validateWorkflowFile(workflowPath, { root = process.cwd(), requi
     if (!approvedProfile) return { errors: [`Unknown Action policy profile: ${profile}`], warnings, reviews };
 
     function readWorkflow(filePath, chain = []) {
-        const resolved = path.resolve(filePath);
-        const relative = path.relative(path.resolve(root), resolved);
-        if (relative.startsWith('..') || path.isAbsolute(relative)) {
-            errors.push(`${filePath}: workflow path escapes repository root.`);
+        const check = isPathInsideRoot(root, filePath);
+        if (!check.inside) {
+            errors.push(`${filePath}: workflow path escapes repository root (${check.reason}).`);
             return;
         }
+        const resolved = check.realPath ?? path.resolve(filePath);
+        const relative = path.relative(path.resolve(root), resolved);
         if (chain.includes(resolved)) {
             errors.push(`${path.relative(root, resolved)}: reusable workflow cycle detected: ${chain.map((item) => path.relative(root, item)).join(' -> ')} -> ${path.relative(root, resolved)}.`);
             return;
@@ -219,7 +220,11 @@ export function validateWorkflowFile(workflowPath, { root = process.cwd(), requi
             errors.push(`${path.relative(root, resolved)}: workflow has unsupported top-level keys or invalid jobs mapping.`);
         }
         const wfName = path.relative(root, resolved);
-        const result = validateWorkflowActions(workflow.jobs, wfName, { requireIoBrokerActions: requireIoBrokerActions && chain.length === 0, allowLocalJobUses: true });
+        const result = validateWorkflowActions(workflow.jobs, wfName, {
+            requireIoBrokerActions: requireIoBrokerActions && chain.length === 0,
+            allowLocalJobUses: true,
+            allowLocalStepUses: true,
+        });
         errors.push(...result.errors);
         warnings.push(...result.warnings);
         reviews.push(...result.reviews);
@@ -239,23 +244,25 @@ export function validateWorkflowFile(workflowPath, { root = process.cwd(), requi
             }
             for (const [index, step] of (Array.isArray(job?.steps) ? job.steps : []).entries()) {
                 if (typeof step?.uses === 'string' && step.uses.startsWith('./')) {
-                    const actionDir = path.resolve(root, step.uses);
-                    if (!isInside(root, actionDir)) {
-                        errors.push(`${wfName}: local Action path ${step.uses} in job "${jobName}" step ${index + 1} escapes repository root.`);
+                    const actionDirCheck = isPathInsideRoot(root, step.uses);
+                    if (!actionDirCheck.inside) {
+                        errors.push(`${wfName}: local Action path ${step.uses} in job "${jobName}" step ${index + 1} escapes repository root (${actionDirCheck.reason}).`);
                         continue;
                     }
-                    const metadata = ['action.yml', 'action.yaml'].map((name) => path.join(actionDir, name)).find(fs.existsSync);
-                    if (!metadata) {
-                        errors.push(`${wfName}: local Action ${step.uses} in job "${jobName}" step ${index + 1} has no action.yml/action.yaml.`);
+                    const actionDir = actionDirCheck.realPath ?? path.resolve(root, step.uses);
+                    const metadataResult = resolveActionMetadata(root, actionDir);
+                    if (!metadataResult.path) {
+                        errors.push(`${wfName}: local Action ${step.uses} in job "${jobName}" step ${index + 1} ${metadataResult.error}.`);
                         continue;
                     }
-                    inspectCompositeAction(metadata, wfName, `${jobName}/step-${index + 1}`, [...chain, resolved]);
+                    const metadata = metadataResult.path;
+                    inspectCompositeAction(metadata, wfName, `${jobName}/step-${index + 1}`, [...chain, resolved], step.with ?? {});
                 }
             }
         }
     }
 
-    function inspectCompositeAction(metadataPath, sourceWorkflow, location, chain) {
+    function inspectCompositeAction(metadataPath, sourceWorkflow, location, chain, suppliedInputs = {}) {
         let metadata;
         try { metadata = loadYaml(fs.readFileSync(metadataPath, 'utf8'), { schema: JSON_SCHEMA }); }
         catch (error) {
@@ -266,20 +273,22 @@ export function validateWorkflowFile(workflowPath, { root = process.cwd(), requi
             errors.push(`${path.relative(root, metadataPath)}: local actions must declare runs.using: composite and runs.steps for recursive validation.`);
             return;
         }
+        validateCompositeInputs(metadata, suppliedInputs, sourceWorkflow, location, errors);
         const jobs = { [location]: { steps: metadata.runs.steps } };
         const result = validateWorkflowActions(jobs, sourceWorkflow, { allowLocalStepUses: true });
         errors.push(...result.errors);
         for (const [index, step] of metadata.runs.steps.entries()) {
             if (typeof step?.uses === 'string' && step.uses.startsWith('./')) {
-                const localActionDir = path.resolve(root, step.uses);
-                if (!isInside(root, localActionDir)) {
-                    errors.push(`${path.relative(root, metadataPath)}: nested local Action path escapes repository root.`);
+                const localActionDirCheck = isPathInsideRoot(root, step.uses);
+                if (!localActionDirCheck.inside) {
+                    errors.push(`${path.relative(root, metadataPath)}: nested local Action path escapes repository root (${localActionDirCheck.reason}).`);
                     continue;
                 }
-                const nestedMetadata = ['action.yml', 'action.yaml'].map((name) => path.join(localActionDir, name)).find(fs.existsSync);
-                if (!nestedMetadata) errors.push(`${path.relative(root, metadataPath)}: nested local Action ${step.uses} has no action.yml/action.yaml.`);
-                else if (chain.includes(nestedMetadata)) errors.push(`${path.relative(root, nestedMetadata)}: local composite Action cycle detected.`);
-                else inspectCompositeAction(nestedMetadata, sourceWorkflow, `${location}/nested-${index + 1}`, [...chain, metadataPath]);
+                const localActionDir = localActionDirCheck.realPath ?? path.resolve(root, step.uses);
+                const metadataResult = resolveActionMetadata(root, localActionDir);
+                if (!metadataResult.path) errors.push(`${path.relative(root, metadataPath)}: nested local Action ${step.uses} ${metadataResult.error}.`);
+                else if (chain.includes(metadataResult.path)) errors.push(`${path.relative(root, metadataResult.path)}: local composite Action cycle detected.`);
+                else inspectCompositeAction(metadataResult.path, sourceWorkflow, `${location}/nested-${index + 1}`, [...chain, metadataPath], step.with ?? {});
             }
         }
     }
@@ -288,17 +297,66 @@ export function validateWorkflowFile(workflowPath, { root = process.cwd(), requi
     return { errors, warnings, reviews };
 }
 
+function validateCompositeInputs(metadata, suppliedInputs, sourceWorkflow, location, errors) {
+    if (suppliedInputs === null || typeof suppliedInputs !== 'object' || Array.isArray(suppliedInputs)) {
+        errors.push(`${sourceWorkflow}: local composite Action ${location} with must be a mapping.`);
+        return;
+    }
+    const declared = metadata.inputs && typeof metadata.inputs === 'object' && !Array.isArray(metadata.inputs)
+        ? metadata.inputs
+        : {};
+    for (const [name, definition] of Object.entries(declared)) {
+        if (definition?.required === true && (!Object.hasOwn(suppliedInputs, name) || suppliedInputs[name] === null || String(suppliedInputs[name]).trim() === '')) {
+            errors.push(`${sourceWorkflow}: local composite Action ${location} misses required input "${name}".`);
+        }
+    }
+    for (const [name, value] of Object.entries(suppliedInputs)) {
+        if (!Object.hasOwn(declared, name)) {
+            errors.push(`${sourceWorkflow}: local composite Action ${location} supplies undeclared input "${name}".`);
+        } else if (value === null || !['string', 'number', 'boolean'].includes(typeof value)) {
+            errors.push(`${sourceWorkflow}: local composite Action ${location} input "${name}" must be a scalar value.`);
+        }
+    }
+}
+
 function resolveLocalWorkflow(root, fromWorkflow, reference, wfName, jobName, errors) {
-    const target = path.resolve(root, reference);
-    if (!isInside(root, target)) {
-        errors.push(`${wfName}: local reusable workflow ${reference} in job "${jobName}" escapes repository root.`);
+    const targetCheck = isPathInsideRoot(root, reference);
+    if (!targetCheck.inside) {
+        errors.push(`${wfName}: local reusable workflow ${reference} in job "${jobName}" escapes repository root (${targetCheck.reason}).`);
         return null;
     }
+    const target = targetCheck.realPath ?? path.resolve(root, reference);
     if (!fs.existsSync(target)) {
         errors.push(`${wfName}: local reusable workflow ${reference} in job "${jobName}" does not exist.`);
         return null;
     }
     return target;
+}
+
+function resolveActionMetadata(root, actionDir) {
+    for (const name of ['action.yml', 'action.yaml']) {
+        const candidate = path.join(actionDir, name);
+        try {
+            const realPath = fs.realpathSync(candidate);
+            const check = isPathInsideRoot(root, realPath);
+            if (!check.inside) return { error: `metadata path ${name} escapes repository root (${check.reason})` };
+            return { path: check.realPath };
+        } catch (error) {
+            if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') {
+                return { error: `cannot resolve metadata ${name} (${error.message})` };
+            }
+            // A dangling symlink is not equivalent to absent metadata: fail closed.
+            try {
+                const stat = fs.lstatSync(candidate);
+                if (stat.isSymbolicLink()) return { error: `metadata ${name} is a dangling or unresolvable symlink (${error.message})` };
+            } catch (statError) {
+                if (statError?.code !== 'ENOENT' && statError?.code !== 'ENOTDIR') {
+                    return { error: `cannot inspect metadata ${name} (${statError.message})` };
+                }
+            }
+        }
+    }
+    return { error: 'has no action.yml/action.yaml' };
 }
 
 function validateReusableInputs(job, target, wfName, jobName, errors) {
@@ -352,9 +410,33 @@ function validateReusableInputs(job, target, wfName, jobName, errors) {
     }
 }
 
-function isInside(root, target) {
-    const relative = path.relative(path.resolve(root), path.resolve(target));
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+/**
+ * Проверяет, что целевой путь находится внутри корня репозитория,
+ * используя реальные файловые пути (с разрешением символических ссылок).
+ * Возвращает { inside: boolean, realPath?: string, reason?: string }.
+ * Если путь не существует или является висячей символической ссылкой,
+ * inside === false и указан reason.
+ */
+function isPathInsideRoot(root, target) {
+    let realRoot;
+    try {
+        realRoot = fs.realpathSync(path.resolve(root));
+    } catch (error) {
+        return { inside: false, reason: `cannot resolve repository root: ${error.message}` };
+    }
+    const resolvedTarget = path.resolve(root, target);
+    let realTarget;
+    try {
+        realTarget = fs.realpathSync(resolvedTarget);
+    } catch (error) {
+        return { inside: false, reason: `path does not exist or is a dangling symlink: ${error.message}` };
+    }
+    const relative = path.relative(realRoot, realTarget);
+    if (relative === '') return { inside: true, realPath: realTarget };
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        return { inside: false, reason: 'escapes repository root' };
+    }
+    return { inside: true, realPath: realTarget };
 }
 
 export function validateRequiredActions(jobs, wfName = 'workflow', options = {}) {

@@ -162,7 +162,7 @@ function validatePublishWorkflow(wfPath, profileName) {
         // оставляет все проверки публикации, но не отвергает локальные
         // reusable workflows повторно — иначе корректный локальный
         // reusable workflow отклонялся бы после успешной рекурсивной проверки.
-        const result = validateWorkflow(workflow?.jobs ?? {}, { wfName: path.basename(wfPath), allowLocalJobUses: true });
+        const result = validateWorkflow(workflow?.jobs ?? {}, { wfName: path.basename(wfPath), allowLocalJobUses: true, allowLocalStepUses: true });
         errors.push(...result.errors);
         warnings.push(...result.warnings);
         reviewNeeded.push(...result.reviews);
