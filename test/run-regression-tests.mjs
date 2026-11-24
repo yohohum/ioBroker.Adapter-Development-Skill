@@ -497,6 +497,105 @@ test('53c. Ручной pnpm/yarn publish с лишними пробелами �
   assertContains(result.stdout + result.stderr, 'npm publish', 'Сообщение должно указывать на ручную публикацию');
 });
 
+console.log('\n=== Интеграционные тесты локальных reusable workflows через release-preflight ===\n');
+
+function runReleaseLocalReusable({ mutateMain, mutateReusable, extraFiles } = {}) {
+  const source = requireFixture('release/local-reusable-correct');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-lr-'));
+  fs.cpSync(source, temp, { recursive: true });
+  const mainPath = path.join(temp, '.github/workflows/test-and-release.yml');
+  if (mutateMain) fs.writeFileSync(mainPath, mutateMain(fs.readFileSync(mainPath, 'utf8')));
+  const reusablePath = path.join(temp, '.github/workflows/reusable.yml');
+  if (mutateReusable) fs.writeFileSync(reusablePath, mutateReusable(fs.readFileSync(reusablePath, 'utf8')));
+  if (extraFiles) {
+    for (const [relative, content] of Object.entries(extraFiles)) {
+      const filePath = path.join(temp, relative);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, content);
+    }
+  }
+  try {
+    return runCommand('node', [RELEASE_PREFLIGHT, temp, '--profile=create-adapter-default', '--no-git-check']);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+}
+
+test('57. Локальный reusable workflow проходит полный release-preflight — PASS', () => {
+  const result = runReleaseLocalReusable({});
+  assertExitCode(result, 0, 'Корректный локальный reusable workflow должен пройти полный release-preflight');
+  assertNotContains(result.stdout + result.stderr, 'требует validateWorkflowFile', 'Локальный reusable workflow не должен отклоняться повторным вызовом валидатора');
+});
+
+test('58. Локальный reusable workflow содержит неизвестный внешний Action — FAIL', () => {
+  const result = runReleaseLocalReusable({ mutateReusable: (yaml) => yaml.replace('uses: actions/checkout@v6', 'uses: evil/not-approved@v1') });
+  assertExitCode(result, 1, 'Неизвестный Action внутри локального reusable workflow должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'evil/not-approved', 'Сообщение должно упоминать неизвестный Action');
+});
+
+test('59. Локальный reusable workflow содержит Action с @main — FAIL', () => {
+  const result = runReleaseLocalReusable({ mutateReusable: (yaml) => yaml.replace('actions/checkout@v6', 'actions/checkout@main') });
+  assertExitCode(result, 1, 'Action с плавающим ref @main должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'неподтверждённый ref', 'Сообщение должно упоминать неподтверждённый ref');
+});
+
+test('60. Локальный reusable workflow содержит Action с отсутствующим ref — FAIL', () => {
+  const result = runReleaseLocalReusable({ mutateReusable: (yaml) => yaml.replace('actions/checkout@v6', 'actions/checkout') });
+  assertExitCode(result, 1, 'Action без ref должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'некорректный uses', 'Сообщение должно указывать на некорректный uses');
+});
+
+test('61. Локальный reusable workflow содержит неправильный input — FAIL', () => {
+  const result = runReleaseLocalReusable({ mutateMain: (yaml) => yaml.replace('      mode: strict', '      mode: 123') });
+  assertExitCode(result, 1, 'Неправильный тип input должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'must have type string', 'Сообщение должно указывать на неверный тип input');
+});
+
+test('62. Локальный reusable workflow содержит некорректный YAML — FAIL', () => {
+  const result = runReleaseLocalReusable({ mutateReusable: () => 'name: [invalid\n' });
+  assertExitCode(result, 1, 'Некорректный YAML локального reusable workflow должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'invalid/duplicate-key YAML', 'Сообщение должно упоминать некорректный YAML');
+});
+
+test('63. Локальный reusable workflow ссылается на отсутствующий файл — FAIL', () => {
+  const result = runReleaseLocalReusable({ mutateMain: (yaml) => yaml.replace('uses: ./.github/workflows/reusable.yml', 'uses: ./.github/workflows/missing.yml') });
+  assertExitCode(result, 1, 'Ссылка на отсутствующий локальный reusable workflow должна быть ошибкой');
+  assertContains(result.stdout + result.stderr, 'does not exist', 'Сообщение должно указывать на отсутствующий файл');
+});
+
+test('64. Локальный reusable workflow содержит циклическую ссылку — FAIL', () => {
+  const result = runReleaseLocalReusable({
+    mutateReusable: () => 'name: cycle\non:\n  workflow_call:\n    inputs:\n      mode:\n        required: true\n        type: string\n    secrets:\n      token:\n        required: true\njobs:\n  inner:\n    uses: ./.github/workflows/reusable.yml\n    with:\n      mode: strict\n    secrets:\n      token: ${{ secrets.TOKEN }}\n',
+  });
+  assertExitCode(result, 1, 'Циклическая ссылка локального reusable workflow должна быть ошибкой');
+  assertContains(result.stdout + result.stderr, 'cycle detected', 'Сообщение должно упоминать цикл');
+});
+
+test('65. Локальный reusable workflow пытается выйти за пределы корня репозитория — FAIL', () => {
+  const result = runReleaseLocalReusable({ mutateMain: (yaml) => yaml.replace('uses: ./.github/workflows/reusable.yml', 'uses: ./../../../outside.yml') });
+  assertExitCode(result, 1, 'Попытка выхода за пределы корня репозитория должна быть ошибкой');
+  assertContains(result.stdout + result.stderr, 'escapes repository root', 'Сообщение должно указывать на обход пути');
+});
+
+test('66. Вложенный локальный reusable workflow содержит запрещённый Action — FAIL', () => {
+  const result = runReleaseLocalReusable({
+    mutateReusable: () => 'name: nested\non:\n  workflow_call:\njobs:\n  inner:\n    uses: ./.github/workflows/inner.yml\n',
+    extraFiles: {
+      '.github/workflows/inner.yml': 'name: inner\non:\n  workflow_call:\njobs:\n  bad:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/not-approved@v1\n',
+    },
+  });
+  assertExitCode(result, 1, 'Запрещённый Action во вложенном локальном reusable workflow должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'evil/not-approved', 'Сообщение должно упоминать запрещённый Action');
+});
+
+test('67. Корректный workflow не отклоняется повторной валидацией, проверки публикации сохранены — PASS/FAIL', () => {
+  const ok = runReleaseLocalReusable({});
+  assertExitCode(ok, 0, 'Корректный workflow должен пройти полный release-preflight');
+  const broken = runReleaseLocalReusable({ mutateMain: (yaml) => yaml.replace("if: startsWith(github.ref, 'refs/tags/v')", 'if: always()') });
+  assertExitCode(broken, 1, 'Проверка условия deploy должна всё ещё выполняться при повторной валидации');
+  assertContains(broken.stdout + broken.stderr, 'always()', 'Сообщение должно указывать на небезопасное условие deploy');
+});
+
 for (const [name, expression] of [
   ['always()', "always() || startsWith(github.ref, 'refs/tags/v')"],
   ['failure()', "failure() || startsWith(github.ref, 'refs/tags/v')"],

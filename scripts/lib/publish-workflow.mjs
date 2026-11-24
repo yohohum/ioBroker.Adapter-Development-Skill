@@ -83,7 +83,7 @@ export function validatePublishWorkflow(jobs, options = {}) {
 
     checkRequiredJobs(safeJobs, wfName, errors);
 
-    const actionResult = validateRequiredActions(safeJobs, wfName);
+    const actionResult = validateRequiredActions(safeJobs, wfName, options);
     errors.push(...actionResult.errors);
     warnings.push(...actionResult.warnings);
     reviews.push(...actionResult.reviews);

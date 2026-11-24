@@ -97,7 +97,20 @@ Scripts are additional control, not a replacement for `@iobroker/testing`, `@iob
 
 ### GitHub Actions release checks
 
-The `create-adapter-default` profile uses an explicit allowlist: `actions/checkout@v6`, `actions/setup-node@v6`, `actions/upload-artifact@v6`, `softprops/action-gh-release@v3`, `ioBroker/testing-action-check@v2`, `ioBroker/testing-action-adapter@v1`, and `ioBroker/testing-action-deploy@v1`. Refs are matched exactly. Unknown Actions, remote reusable workflows, and unsupported constructs are rejected. Local reusable workflows and composite Actions are inspected recursively; reusable-workflow inputs are checked against `on.workflow_call`. Action inputs are checked for names, required values, types, and documented constraints from official `action.yml` contracts. `custom-approved` does not turn unverified Actions into trusted ones: every additional Action requires an explicit allowlist entry with a fixed ref and documented contract. FAIL means a violation was found; NEEDS REVIEW means safety could not be established automatically.
+The `create-adapter-default` profile uses an explicit allowlist, divided into two groups:
+
+**A. Actions of the official template** (used by `test-and-release.yml`, required for the standard profile):
+- `actions/checkout@v6`
+- `actions/setup-node@v6`
+- `ioBroker/testing-action-check@v2`
+- `ioBroker/testing-action-adapter@v1`
+- `ioBroker/testing-action-deploy@v1`
+
+**B. Additional allowed Actions** (not part of the official template, allowed for custom and extended scenarios):
+- `actions/upload-artifact@v6` — rationale: used internally by `ioBroker/testing-action-adapter@v1` to archive screenshots; may be needed for custom artifact publishing.
+- `softprops/action-gh-release@v3` — rationale: used internally by `ioBroker/testing-action-deploy@v1` to create GitHub releases; may be needed for custom release scenarios.
+
+Refs are matched exactly. Unknown Actions, remote reusable workflows, and unsupported constructs are rejected. Local reusable workflows and composite Actions are inspected recursively; reusable-workflow inputs are checked against `on.workflow_call`. Action inputs are checked for names, required values, types, and documented constraints from official `action.yml` contracts (for `actions/upload-artifact@v6` only name, path, if-no-files-found, retention-days, compression-level, overwrite, include-hidden-files are allowed; the official v6 contract has no `archive` parameter). `custom-approved` does not turn unverified Actions into trusted ones: every additional Action requires an explicit allowlist entry with a fixed ref and documented contract. FAIL means a violation was found; NEEDS REVIEW means safety could not be established automatically.
 
 ## Installation in the agent repository
 

@@ -157,7 +157,12 @@ function validatePublishWorkflow(wfPath, profileName) {
     reviewNeeded.push(...actionResult.reviews);
     try {
         const workflow = loadYaml(fs.readFileSync(wfPath, 'utf8'));
-        const result = validateWorkflow(workflow?.jobs ?? {}, { wfName: path.basename(wfPath) });
+        // validateWorkflowFile() выше уже рекурсивно проверила локальные
+        // reusable workflows (включая job-level uses: ./...). Второй этап
+        // оставляет все проверки публикации, но не отвергает локальные
+        // reusable workflows повторно — иначе корректный локальный
+        // reusable workflow отклонялся бы после успешной рекурсивной проверки.
+        const result = validateWorkflow(workflow?.jobs ?? {}, { wfName: path.basename(wfPath), allowLocalJobUses: true });
         errors.push(...result.errors);
         warnings.push(...result.warnings);
         reviewNeeded.push(...result.reviews);

@@ -4,25 +4,55 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { JSON_SCHEMA, load as loadYaml } from 'js-yaml';
-export const OFFICIAL_ACTIONS = [
+// A. Actions официального шаблона create-adapter-default (используются
+// шаблоном test-and-release.yml). Только они считаются обязательными для
+// стандартного профиля.
+const OFFICIAL_TEMPLATE_ACTIONS = [
     {
         name: 'actions/checkout', allowedRefs: ['v6'], inputs: [
             'repository', 'ref', 'token', 'ssh-key', 'ssh-known-hosts', 'ssh-strict', 'ssh-user',
             'persist-credentials', 'path', 'clean', 'filter', 'sparse-checkout', 'sparse-checkout-cone-mode',
             'fetch-depth', 'fetch-tags', 'show-progress', 'lfs', 'submodules', 'set-safe-directory',
             'github-server-url', 'allow-unsafe-pr-checkout'
-        ], requiredInputGroups: [], kind: 'step',
+        ], requiredInputGroups: [], kind: 'step', tier: 'template',
     },
     {
         name: 'actions/setup-node', allowedRefs: ['v6'], inputs: [
             'node-version', 'node-version-file', 'architecture', 'check-latest', 'registry-url', 'scope', 'token',
             'cache', 'package-manager-cache', 'cache-dependency-path', 'mirror', 'mirror-token'
-        ], requiredInputGroups: [], kind: 'step',
+        ], requiredInputGroups: [], kind: 'step', tier: 'template',
     },
+    {
+        name: 'ioBroker/testing-action-check', job: 'check-and-lint', allowedRefs: ['v2'], inputs: [
+            'node-version', 'install-command', 'package-cache', 'type-checking', 'type-checking-command',
+            'lint', 'lint-command', 'test-command'
+        ], requiredInputGroups: [['node-version']], kind: 'step', tier: 'template',
+    },
+    {
+        name: 'ioBroker/testing-action-adapter', job: 'adapter-tests', allowedRefs: ['v1'], inputs: [
+            'node-version', 'engine-strict', 'install-command', 'package-cache', 'os', 'build', 'build-command',
+            'extra-tests', 'unit-test-check-pattern', 'unit-test-command', 'integration-test-command', 'screenshots-path'
+        ], requiredInputGroups: [['node-version'], ['os']], kind: 'step', tier: 'template',
+    },
+    {
+        name: 'ioBroker/testing-action-deploy', job: 'deploy', allowedRefs: ['v1'], inputs: [
+            'node-version', 'install-command', 'package-cache', 'build', 'build-command', 'npm-token', 'tag',
+            'github-token', 'sentry', 'sentry-token', 'sentry-url', 'sentry-org', 'sentry-project',
+            'sentry-version-prefix', 'sentry-github-integration', 'sentry-sourcemap-paths'
+        ], requiredInputGroups: [['node-version'], ['github-token']], kind: 'step', tier: 'template',
+    },
+];
+
+// B. Дополнительные разрешённые Actions (не входят в официальный шаблон,
+// разрешены для пользовательских и расширенных сценариев). Для каждого
+// действия указано основание разрешения. Они не являются частью
+// официального шаблона create-adapter-default и не требуются им.
+const ADDITIONAL_ACTIONS = [
     {
         name: 'actions/upload-artifact', allowedRefs: ['v6'], inputs: [
             'name', 'path', 'if-no-files-found', 'retention-days', 'compression-level', 'overwrite', 'include-hidden-files'
-        ], requiredInputGroups: [['path']], kind: 'step',
+        ], requiredInputGroups: [['path']], kind: 'step', tier: 'additional',
+        rationale: 'Используется внутри ioBroker/testing-action-adapter@v1 для архивации скриншотов; может потребоваться для пользовательской публикации артефактов.',
     },
     {
         name: 'softprops/action-gh-release', allowedRefs: ['v3'], inputs: [
@@ -30,28 +60,15 @@ export const OFFICIAL_ACTIONS = [
             'working_directory', 'overwrite_files', 'fail_on_unmatched_files', 'repository', 'token',
             'target_commitish', 'discussion_category_name', 'generate_release_notes', 'previous_tag',
             'append_body', 'make_latest'
-        ], requiredInputGroups: [], kind: 'step',
-    },
-    {
-        name: 'ioBroker/testing-action-check', job: 'check-and-lint', allowedRefs: ['v2'], inputs: [
-            'node-version', 'install-command', 'package-cache', 'type-checking', 'type-checking-command',
-            'lint', 'lint-command', 'test-command'
-        ], requiredInputGroups: [['node-version']], kind: 'step',
-    },
-    {
-        name: 'ioBroker/testing-action-adapter', job: 'adapter-tests', allowedRefs: ['v1'], inputs: [
-            'node-version', 'engine-strict', 'install-command', 'package-cache', 'os', 'build', 'build-command',
-            'extra-tests', 'unit-test-check-pattern', 'unit-test-command', 'integration-test-command', 'screenshots-path'
-        ], requiredInputGroups: [['node-version'], ['os']], kind: 'step',
-    },
-    {
-        name: 'ioBroker/testing-action-deploy', job: 'deploy', allowedRefs: ['v1'], inputs: [
-            'node-version', 'install-command', 'package-cache', 'build', 'build-command', 'npm-token', 'tag',
-            'github-token', 'sentry', 'sentry-token', 'sentry-url', 'sentry-org', 'sentry-project',
-            'sentry-version-prefix', 'sentry-github-integration', 'sentry-sourcemap-paths'
-        ], requiredInputGroups: [['node-version'], ['github-token']], kind: 'step',
+        ], requiredInputGroups: [], kind: 'step', tier: 'additional',
+        rationale: 'Используется внутри ioBroker/testing-action-deploy@v1 для создания GitHub-релиза; может потребоваться для пользовательских сценариев релиза.',
     },
 ];
+
+// Единый allowlist для внешних Actions: шаблонные + дополнительные.
+// Проверка inputs ведётся строго по официальному контракту конкретной версии.
+export const OFFICIAL_ACTIONS = [...OFFICIAL_TEMPLATE_ACTIONS, ...ADDITIONAL_ACTIONS];
+export { OFFICIAL_TEMPLATE_ACTIONS, ADDITIONAL_ACTIONS };
 
 function splitUses(uses) {
     if (typeof uses !== 'string' || uses.trim() !== uses || uses.length === 0) return null;
@@ -340,6 +357,10 @@ function isInside(root, target) {
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-export function validateRequiredActions(jobs, wfName = 'workflow') {
-    return validateWorkflowActions(jobs, wfName, { requireIoBrokerActions: true, allowReusableWorkflows: false });
+export function validateRequiredActions(jobs, wfName = 'workflow', options = {}) {
+    return validateWorkflowActions(jobs, wfName, {
+        requireIoBrokerActions: true,
+        allowReusableWorkflows: false,
+        ...options,
+    });
 }

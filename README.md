@@ -97,7 +97,20 @@
 
 ### Проверка GitHub Actions релиза
 
-В стандартном профиле `create-adapter-default` разрешён allowlist: `actions/checkout@v6`, `actions/setup-node@v6`, `actions/upload-artifact@v6`, `softprops/action-gh-release@v3`, `ioBroker/testing-action-check@v2`, `ioBroker/testing-action-adapter@v1` и `ioBroker/testing-action-deploy@v1`. Ref сверяется целиком с политикой. Неизвестные Actions, внешние reusable workflows и недоступные для проверки конструкции отклоняются. Локальные reusable workflows и composite Actions обходятся рекурсивно; inputs reusable workflow сверяются с `on.workflow_call`. Inputs проверяются по именам, обязательности, типам и документированным ограничениям официальных `action.yml`. Пользовательский workflow может использовать `custom-approved`, но это не снимает fail-closed политику; каждый дополнительный Action требует явного утверждения, фиксированного ref и задокументированного контракта. FAIL означает обнаруженное нарушение, NEEDS REVIEW — безопасность автоматически не подтверждена.
+В стандартном профиле `create-adapter-default` разрешён allowlist, разделённый на две группы:
+
+**A. Actions официального шаблона** (используются `test-and-release.yml`, требуются для стандартного профиля):
+- `actions/checkout@v6`
+- `actions/setup-node@v6`
+- `ioBroker/testing-action-check@v2`
+- `ioBroker/testing-action-adapter@v1`
+- `ioBroker/testing-action-deploy@v1`
+
+**B. Дополнительные разрешённые Actions** (не входят в официальный шаблон, разрешены для пользовательских и расширенных сценариев):
+- `actions/upload-artifact@v6` — основание: используется внутри `ioBroker/testing-action-adapter@v1` для архивации скриншотов; может потребоваться для пользовательской публикации артефактов.
+- `softprops/action-gh-release@v3` — основание: используется внутри `ioBroker/testing-action-deploy@v1` для создания GitHub-релиза; может потребоваться для пользовательских сценариев релиза.
+
+Ref сверяется целиком с политикой. Неизвестные Actions, внешние reusable workflows и недоступные для проверки конструкции отклоняются. Локальные reusable workflows и composite Actions обходятся рекурсивно; inputs reusable workflow сверяются с `on.workflow_call`. Inputs проверяются по именам, обязательности, типам и документированным ограничениям официальных `action.yml` (для `actions/upload-artifact@v6` допустимы только name, path, if-no-files-found, retention-days, compression-level, overwrite, include-hidden-files; параметра `archive` в официальном контракте v6 нет). Пользовательский workflow может использовать `custom-approved`, но это не снимает fail-closed политику; каждый дополнительный Action требует явного утверждения, фиксированного ref и задокументированного контракта. FAIL означает обнаруженное нарушение, NEEDS REVIEW — безопасность автоматически не подтверждена.
 
 ## Установка в репозиторий агента
 
