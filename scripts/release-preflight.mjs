@@ -5,15 +5,47 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { load as loadYaml } from 'js-yaml';
 import { validatePublishWorkflow as validateWorkflow, validateWorkflowFile } from './lib/publish-workflow.mjs';
+import { validateCustomReleaseWorkflow } from './lib/custom-release-workflow.mjs';
 import { readVerifiedText } from './lib/action-refs.mjs';
 
 const VALID_PROFILES = ['create-adapter-default', 'custom-approved'];
+const DEFAULT_WORKFLOW = '.github/workflows/test-and-release.yml';
 
 const args = process.argv.slice(2);
+if (args.includes('--help') || args.includes('-h')) {
+    console.log(`Usage: node scripts/release-preflight.mjs [repo-root] [options]
+
+Options:
+  --profile=create-adapter-default  Standard ioBroker create-adapter profile (default behaviour when omitted).
+  --profile=custom-approved         Reviewed tag-based release with npm Trusted Publishing (OIDC).
+  --workflow=<path>                 Release workflow path for custom-approved (default: ${DEFAULT_WORKFLOW}).
+  --allow-io-package-no-prerelease  Allow prerelease package.json version with base io-package.json version.
+  --no-git-check                    Skip the clean working tree check.
+  --help, -h                        Show this help.
+
+Profiles are explicit. An unknown profile fails the check. The custom-approved
+profile does not require @alcalzone/release-script, but it keeps the same strict
+Action allowlist, recursive local workflow/composite validation, symlink/path
+checks, YAML duplicate-key detection, and tag-only publish condition.
+
+The custom profile requires a workflow that:
+  - is triggered by push tags matching vX.Y.Z (prerelease suffix allowed);
+  - has build/lint and test jobs that run on the release tag;
+  - makes deploy depend on every validation job;
+  - uses id-token: write and contents: write, and no long-lived npm token;
+  - publishes only through ioBroker/testing-action-deploy@v1 or one restricted
+    npm publish --provenance step;
+  - checks tag/package.json/io-package.json version consistency before publish.
+`);
+    process.exit(0);
+}
+
 const rootArg = args.find((arg) => !arg.startsWith('--')) ?? '.';
 const allowIoPackageNoPrerelease = args.includes('--allow-io-package-no-prerelease');
 const profileArg = args.find((arg) => arg.startsWith('--profile='));
-const profile = profileArg ? profileArg.slice('--profile='.length) : null;
+const profile = profileArg ? profileArg.slice('--profile='.length) : 'create-adapter-default';
+const workflowArg = args.find((arg) => arg.startsWith('--workflow='));
+const customWorkflowRelative = workflowArg ? workflowArg.slice('--workflow='.length) : DEFAULT_WORKFLOW;
 const skipGitCheck = args.includes('--no-git-check');
 const root = path.resolve(rootArg);
 const errors = [];
@@ -39,16 +71,6 @@ if (profile !== null && !VALID_PROFILES.includes(profile)) {
     process.exit(1);
 }
 
-// Если профиль не указан, определяем по наличию release-script
-if (profile === null) {
-    const devDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
-    if (devDeps['@alcalzone/release-script']) {
-        warnings.push('Профиль не указан, но обнаружен @alcalzone/release-script. Рекомендуется --profile=create-adapter-default.');
-    } else {
-        reviewNeeded.push('Профиль не указан. Укажите --profile=create-adapter-default или --profile=custom-approved (ручной релиз с тегом без release-script).');
-    }
-}
-
 // --- Общие проверки (обязательны для любого профиля) ---
 
 if (pkg.version !== ioPkg.common?.version) {
@@ -64,7 +86,7 @@ const hasWip = changelogCandidates.some((name) => {
     return fs.existsSync(file) && /WORK IN PROGRESS/i.test(fs.readFileSync(file, 'utf8'));
 });
 if (!hasWip) {
-    if (profile === 'create-adapter-default' || profile === null) {
+    if (profile === 'create-adapter-default') {
         errors.push('No WORK IN PROGRESS changelog placeholder found in README.md.');
     } else {
         reviewNeeded.push('No WORK IN PROGRESS changelog placeholder found in README.md.');
@@ -78,7 +100,7 @@ if (hasChangelogMd) {
 }
 
 // --- Профиль create-adapter-default ---
-if (profile === 'create-adapter-default' || profile === null) {
+if (profile === 'create-adapter-default') {
     const devDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
     if (!devDeps['@alcalzone/release-script']) {
         errors.push('@alcalzone/release-script is not installed (требуется для профиля create-adapter-default).');
@@ -122,22 +144,23 @@ if (profile === 'create-adapter-default' || profile === null) {
 // --- Профиль custom-approved ---
 if (profile === 'custom-approved') {
     // Профиль предназначен для ручного релиза с тегом и Trusted Publishing.
-    // release-script он не требует, но применяет ту же workflow и Action
-    // policy, что и стандартный профиль, и не утверждает альтернативный
-    // publication workflow.
+    // release-script он не требует, но применяет тот же строгий Action
+    // allowlist, рекурсивную проверку локальных workflows/composite actions,
+    // защиту от symlink/path escape и отдельный структурный контракт
+    // tag-based публикации. Он не утверждает альтернативный npm-publish.yml.
     if (!pkg.version || !ioPkg.common?.version) {
         errors.push('Не удаётся проверить версию: отсутствует package.json version или io-package.json common.version.');
     }
 
-    const testAndReleasePath = path.join(root, '.github/workflows/test-and-release.yml');
+    const customWorkflowPath = path.join(root, customWorkflowRelative);
     const npmPublishPath = path.join(root, '.github/workflows/npm-publish.yml');
     if (fs.existsSync(npmPublishPath)) {
-        errors.push('.github/workflows/npm-publish.yml не поддерживается в профиле custom-approved; используйте стандартный test-and-release.yml.');
+        errors.push('.github/workflows/npm-publish.yml не поддерживается в профиле custom-approved; используйте разрешённый tag-based release workflow.');
     }
-    if (!fs.existsSync(testAndReleasePath)) {
-        errors.push('No publishing workflow found: .github/workflows/test-and-release.yml (обязателен также для профиля custom-approved).');
+    if (!fs.existsSync(customWorkflowPath)) {
+        errors.push(`No publishing workflow found: ${customWorkflowRelative} (обязателен для профиля custom-approved).`);
     } else {
-        validatePublishWorkflow(testAndReleasePath, 'custom-approved');
+        validateCustomWorkflow(customWorkflowPath);
     }
 }
 
@@ -168,6 +191,26 @@ function validatePublishWorkflow(wfPath, profileName) {
     }
 }
 
+function validateCustomWorkflow(wfPath) {
+    const actionResult = validateWorkflowFile(wfPath, {
+        root,
+        requireIoBrokerActions: false,
+        profile: 'custom-approved',
+    });
+    errors.push(...actionResult.errors);
+    warnings.push(...actionResult.warnings);
+    reviewNeeded.push(...actionResult.reviews);
+    try {
+        const workflow = loadYaml(readVerifiedText(root, wfPath));
+        const result = validateCustomReleaseWorkflow(workflow, { wfName: path.relative(root, wfPath) });
+        errors.push(...result.errors);
+        warnings.push(...result.warnings);
+        reviewNeeded.push(...result.reviews);
+    } catch (error) {
+        errors.push(`${wfPath}: некорректный YAML: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
 // --- Проверка git статуса ---
 if (!skipGitCheck) {
     const status = spawnSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' });
@@ -185,9 +228,9 @@ function finish() {
         console.error(`Release preflight failed: ${errors.length} error(s), ${warnings.length} warning(s), ${reviewNeeded.length} review(s).`);
         process.exitCode = 1;
     } else if (reviewNeeded.length > 0) {
-        console.log(`Release preflight: NEEDS REVIEW (profile: ${profile ?? 'auto'}): ${reviewNeeded.length} review(s), ${warnings.length} warning(s).`);
+        console.log(`Release preflight: NEEDS REVIEW (profile: ${profile}): ${reviewNeeded.length} review(s), ${warnings.length} warning(s).`);
         process.exitCode = 2;
     } else {
-        console.log(`Release preflight passed (profile: ${profile ?? 'auto'}): ${warnings.length} warning(s).`);
+        console.log(`Release preflight passed (profile: ${profile}): ${warnings.length} warning(s).`);
     }
 }

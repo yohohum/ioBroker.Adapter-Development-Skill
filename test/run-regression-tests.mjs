@@ -109,6 +109,35 @@ function runReleaseWithWorkflowMutation(mutate) {
   }
 }
 
+function runCustomReleaseMutation({ mutateWorkflow, mutatePackage, mutateIoPackage, extraFiles = {}, removeFiles = [], setup } = {}) {
+  const source = requireFixture('release/custom-valid');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-custom-release-'));
+  fs.cpSync(source, temp, { recursive: true });
+  const workflowPath = path.join(temp, '.github/workflows/test-and-release.yml');
+  if (mutateWorkflow) fs.writeFileSync(workflowPath, mutateWorkflow(fs.readFileSync(workflowPath, 'utf8')));
+  if (mutatePackage) {
+    const file = path.join(temp, 'package.json');
+    fs.writeFileSync(file, JSON.stringify(mutatePackage(JSON.parse(fs.readFileSync(file, 'utf8'))), null, 2));
+  }
+  if (mutateIoPackage) {
+    const file = path.join(temp, 'io-package.json');
+    fs.writeFileSync(file, JSON.stringify(mutateIoPackage(JSON.parse(fs.readFileSync(file, 'utf8'))), null, 2));
+  }
+  for (const [relative, content] of Object.entries(extraFiles)) {
+    const filePath = path.join(temp, relative);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content);
+  }
+  for (const relative of removeFiles) fs.rmSync(path.join(temp, relative), { recursive: true, force: true });
+  const cleanup = setup?.(temp) ?? (() => {});
+  try {
+    return runCommand('node', [RELEASE_PREFLIGHT, temp, '--profile=custom-approved', '--no-git-check']);
+  } finally {
+    cleanup();
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+}
+
 function createGitFixture(sourceRelative, commitCount = 20) {
   const source = requireFixture(sourceRelative);
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-git-'));
@@ -827,6 +856,87 @@ test('Внутренний symlink разрешается только посл�
 
 console.log('\n=== Профили Action policy ===\n');
 
+test('custom-approved tag-based OIDC workflow fixture — PASS', () => {
+  const result = runRelease('release/custom-valid', 'custom-approved');
+  assertExitCode(result, 0, 'Полный tag-based Trusted Publishing workflow должен пройти custom profile');
+});
+
+for (const [label, mutateWorkflow, expected] of [
+  ['branch-only trigger', (yaml) => yaml.replace("    tags:\n      - 'v*'\n", ''), 'push'],
+  ['wrong tag format', (yaml) => yaml.replace("'v*'", "'main'"), 'vX.Y.Z'],
+  ['missing required tests', (yaml) => yaml.replace('      - run: npm run test:integration\n', '').replace('      - run: npm run test:package\n', ''), 'обязательными тестами'],
+  ['deploy missing needs', (yaml) => yaml.replace('needs: [check-and-lint, adapter-tests]', 'needs: [check-and-lint]'), 'adapter-tests'],
+  ['skipped validation job', (yaml) => yaml.replace('  adapter-tests:\n', "  adapter-tests:\n    if: github.event_name == 'pull_request'\n"), 'может пропустить'],
+  ['deploy runs after failure', (yaml) => yaml.replace("if: startsWith(github.ref, 'refs/tags/v')", 'if: always()'), 'always()'],
+  ['npm long-lived token', (yaml) => yaml.replace("          github-token: ${{ secrets.GITHUB_TOKEN }}", "          github-token: ${{ secrets.GITHUB_TOKEN }}\n          npm-token: ${{ secrets.NPM_TOKEN }}"), 'npm token'],
+  ['missing OIDC permission', (yaml) => yaml.replace('      id-token: write\n', ''), 'id-token: write'],
+  ['excessive permission', (yaml) => yaml.replace('      id-token: write\n', '      id-token: write\n      packages: write\n'), 'избыточное permission'],
+  ['unknown Action', (yaml) => yaml.replace('actions/checkout@v6', 'evil/action@v1'), 'evil/action'],
+  ['floating Action ref', (yaml) => yaml.replace('actions/checkout@v6', 'actions/checkout@main'), 'неподтверждённый ref'],
+  ['duplicate publish path', (yaml) => yaml.replace('      - name: Publish with npm Trusted Publishing\n        uses: ioBroker/testing-action-deploy@v1', '      - name: Duplicate publish\n        run: npm publish --provenance\n      - name: Publish with npm Trusted Publishing\n        uses: ioBroker/testing-action-deploy@v1').replace('      - uses: ioBroker/testing-action-deploy@v1', '      - run: npm publish --provenance\n      - uses: ioBroker/testing-action-deploy@v1'), 'несколько publish step'],
+  ['version guard missing', (yaml) => yaml.replace(/      - name: Verify release tag and package versions[\s\S]*?(?=      - uses: actions\/setup-node)/, ''), 'step проверки соответствия'],
+]) {
+  test(`custom-approved ${label} — FAIL`, () => {
+    const result = runCustomReleaseMutation({ mutateWorkflow });
+    assertExitCode(result, 1, `${label} должен быть отклонён`);
+    assertContains(result.stdout + result.stderr, expected, `Диагностика должна указывать на ${expected}`);
+  });
+}
+
+test('custom-approved version mismatch между package и io-package — FAIL', () => {
+  const result = runCustomReleaseMutation({
+    mutatePackage: (pkg) => ({ ...pkg, version: '2.0.0' }),
+  });
+  assertExitCode(result, 1, 'Несовпадающая версия пакета должна быть отклонена');
+  assertContains(result.stdout + result.stderr, 'Version mismatch', 'Диагностика должна указывать на version mismatch');
+});
+
+test('custom-approved запрещает publish вне deploy — FAIL', () => {
+  const result = runCustomReleaseMutation({
+    mutateWorkflow: (yaml) => yaml.replace('      - run: npm run lint\n', '      - run: npm run lint\n      - run: npm publish --provenance\n'),
+  });
+  assertExitCode(result, 1, 'Publish вне deploy должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'прямой publish в job "check-and-lint"', 'Диагностика должна указывать на publish вне deploy');
+});
+
+test('custom-approved rejected unsupported workflow event — FAIL', () => {
+  const result = runCustomReleaseMutation({
+    mutateWorkflow: (yaml) => yaml.replace('  pull_request:\n', '  workflow_dispatch:\n  pull_request:\n'),
+  });
+  assertExitCode(result, 1, 'workflow_dispatch должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'workflow_dispatch', 'Диагностика должна указывать на недопустимый event');
+});
+
+test('custom-approved preserves nested workflow Action allowlist — FAIL', () => {
+  const result = runCustomReleaseMutation({
+    mutateWorkflow: (yaml) => yaml.replace('  deploy:\n', '  nested-validation:\n    uses: ./.github/workflows/nested.yml\n\n  deploy:\n'),
+    extraFiles: {
+      '.github/workflows/nested.yml': 'name: nested\non:\n  workflow_call:\njobs:\n  inner:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/not-approved@v1\n',
+    },
+  });
+  assertExitCode(result, 1, 'Запрещённый Action во вложенном workflow должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'evil/not-approved', 'Диагностика должна найти вложенный Action');
+});
+
+test('custom-approved preserves composite Action allowlist — FAIL', () => {
+  const result = runCustomReleaseMutation({
+    mutateWorkflow: (yaml) => yaml.replace('      - run: npm run build\n', '      - run: npm run build\n      - uses: ./.github/actions/custom\n'),
+    extraFiles: {
+      '.github/actions/custom/action.yml': 'name: custom\nruns:\n  using: composite\n  steps:\n    - uses: evil/not-approved@v1\n',
+    },
+  });
+  assertExitCode(result, 1, 'Запрещённый Action во вложенном composite должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'evil/not-approved', 'Диагностика должна найти Action в composite');
+});
+
+test('custom-approved rejects repository path escape — FAIL', () => {
+  const result = runCustomReleaseMutation({
+    mutateWorkflow: (yaml) => yaml.replace('      - run: npm run build\n', '      - run: npm run build\n      - uses: ./../../../outside-action\n'),
+  });
+  assertExitCode(result, 1, 'Путь за пределы репозитория должен быть отклонён');
+  assertContains(result.stdout + result.stderr, 'escapes repository root', 'Диагностика должна указывать на path escape');
+});
+
 test('custom-approved не расширяет allowlist и не влияет на стандартный профиль', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-profile-'));
   try {
@@ -845,8 +955,22 @@ test('custom-approved не расширяет allowlist и не влияет н�
 });
 
 test('custom-approved принимает только стандартный test-and-release workflow', () => {
-  const result = runRelease('release/correct', 'custom-approved');
-  assertExitCode(result, 0, 'Корректный стандартный workflow должен пройти в custom-approved');
+  const source = requireFixture('release/correct');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-standard-custom-'));
+  fs.cpSync(source, temp, { recursive: true });
+  try {
+    const workflowPath = path.join(temp, '.github/workflows/test-and-release.yml');
+    let workflow = fs.readFileSync(workflowPath, 'utf8');
+    workflow = workflow.replace("      - 'v[0-9]+.[0-9]+.[0-9]+'\n      - 'v[0-9]+.[0-9]+.[0-9]+-*'", "      - 'v*'");
+    workflow = workflow.replace('    branches: [main, master]\n', '');
+    workflow = workflow.replace('  permissions:\n    contents: read\n', '  permissions:\n    contents: read\n');
+    workflow = workflow.replace('          TAG_VERSION="${GITHUB_REF_NAME#v}"\n', '          TAG_VERSION="${GITHUB_REF_NAME#v}"\n          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release tag"; exit 1; }\n');
+    fs.writeFileSync(workflowPath, workflow);
+    const result = runCommand('node', [RELEASE_PREFLIGHT, temp, '--profile=custom-approved', '--no-git-check']);
+    assertExitCode(result, 0, 'Стандартный publish workflow после минимальной custom contract adaptation должен пройти');
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });
 
 test('custom-approved поддерживает ручной релиз с тегом без release-script', () => {
@@ -854,6 +978,12 @@ test('custom-approved поддерживает ручной релиз с тег
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-manual-release-'));
   fs.cpSync(source, temp, { recursive: true });
   try {
+    const workflowPath = path.join(temp, '.github/workflows/test-and-release.yml');
+    let workflow = fs.readFileSync(workflowPath, 'utf8');
+    workflow = workflow.replace("      - 'v[0-9]+.[0-9]+.[0-9]+'\n      - 'v[0-9]+.[0-9]+.[0-9]+-*'", "      - 'v*'");
+    workflow = workflow.replace('    branches: [main, master]\n', '');
+    workflow = workflow.replace('          TAG_VERSION="${GITHUB_REF_NAME#v}"\n', '          TAG_VERSION="${GITHUB_REF_NAME#v}"\n          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release tag"; exit 1; }\n');
+    fs.writeFileSync(workflowPath, workflow);
     const pkgPath = path.join(temp, 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     delete pkg.devDependencies;

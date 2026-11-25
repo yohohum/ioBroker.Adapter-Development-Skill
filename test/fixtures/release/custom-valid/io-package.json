@@ -1,0 +1,20 @@
+{
+  "common": {
+    "name": "test-adapter",
+    "version": "1.0.0",
+    "titleLang": {
+      "en": "Test Adapter",
+      "de": "Test Adapter"
+    },
+    "desc": {
+      "en": "Test",
+      "de": "Test"
+    },
+    "news": {
+      "1.0.0": {
+        "en": "Initial release",
+        "de": "Erste Veröffentlichung"
+      }
+    }
+  }
+}

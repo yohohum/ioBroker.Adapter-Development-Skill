@@ -1,0 +1,14 @@
+{
+  "name": "iobroker.test-adapter",
+  "version": "1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/test/ioBroker.test-adapter.git"
+  },
+  "scripts": {
+    "build": "node -e \"console.log('build')\"",
+    "lint": "node -e \"console.log('lint')\"",
+    "test:package": "node -e \"console.log('package tests')\"",
+    "test:integration": "node -e \"console.log('integration tests')\""
+  }
+}

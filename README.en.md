@@ -66,7 +66,8 @@ Official ioBroker documentation and schemas are the single source of truth for A
 │   └── lib/
 │       ├── action-refs.mjs
 │       ├── deploy-condition.mjs
-│       └── publish-workflow.mjs
+│       ├── publish-workflow.mjs
+│       └── custom-release-workflow.mjs
 ├── templates/
 │   ├── adapter-tests/
 │   │   ├── testPackageFiles.cjs
@@ -110,7 +111,7 @@ The `create-adapter-default` profile uses an explicit allowlist, divided into tw
 - `actions/upload-artifact@v6` — rationale: used internally by `ioBroker/testing-action-adapter@v1` to archive screenshots; may be needed for custom artifact publishing.
 - `softprops/action-gh-release@v3` — rationale: used internally by `ioBroker/testing-action-deploy@v1` to create GitHub releases; may be needed for custom release scenarios.
 
-Refs are matched exactly. Unknown Actions, remote reusable workflows, and unsupported constructs are rejected. Local reusable workflows and composite Actions are inspected recursively; reusable-workflow inputs are checked against `on.workflow_call`. Action inputs are checked for names, required values, types, and documented constraints from official `action.yml` contracts (for `actions/upload-artifact@v6` only name, path, if-no-files-found, retention-days, compression-level, overwrite, include-hidden-files are allowed; the official v6 contract has no `archive` parameter). The `custom-approved` profile uses the same Action allowlist and the same standard `.github/workflows/test-and-release.yml` as `create-adapter-default`; it does not approve an alternative `npm-publish.yml`, extend the set of allowed Actions, or lift the fail-closed policy. The profile can be used for a manual tag release without release-script: it does not require `@alcalzone/release-script`, but keeps the same workflow requirements. Every action from the allowlist requires a fixed ref and a documented contract. Workflow and action metadata files are read through an open descriptor after rechecking the canonical path and comparing the opened file identity; external and dangling symlinks are rejected. This reduces path-replacement TOCTOU risk but does not prevent concurrent writes to the same inode; validation assumes a local checkout without a hostile concurrent writer. FAIL means a violation was found; NEEDS REVIEW means safety could not be established automatically.
+Refs are matched exactly. Unknown Actions, remote reusable workflows, and unsupported constructs are rejected. Local reusable workflows and composite Actions are recursively checked; inputs/secrets are checked against declarations. `custom-approved` is a separate, explicitly selected tag-based profile using npm Trusted Publishing/OIDC: a `vX.Y.Z` trigger, real build/lint/tests, deploy `needs` on all validation jobs, version consistency, and no long-lived npm token. It permits one `ioBroker/testing-action-deploy@v1` step or one tightly constrained `npm publish --provenance` step with a duplicate-version guard. The standard `create-adapter-default` remains the safe default and is unchanged. Both profiles retain the Action allowlist, ref pinning, recursive local workflow/composite validation, inputs/secrets checks, cycle/path/symlink protection, and duplicate-key YAML handling. Workflow/action metadata reads verify canonical paths and opened-file identity. See `workflows/09-release.md` and `node scripts/release-preflight.mjs --help` for the contract.
 
 ## Installation in the agent repository
 

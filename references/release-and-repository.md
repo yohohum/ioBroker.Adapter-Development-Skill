@@ -70,7 +70,7 @@ STABLE — отдельный процесс после достаточного
 
 Поддерживай раздел `WORK IN PROGRESS` вручную. Release script использует changelog placeholder и превращает его в заголовок версии с датой в `README.md`; он не должен считаться генератором содержательного changelog из произвольной истории Git. Не переноси `WORK IN PROGRESS` в `CHANGELOG_OLD.md`: этот архив предназначен только для версий, выходящих за последние пять релизов (S6020).
 
-Если `@alcalzone/release-script` не используется, допустим ручной релиз с тегом: синхронно обнови версии в `package.json`/`io-package.json` и `common.news`, замени `WORK IN PROGRESS` на заголовок версии с датой, создай и запушь тег `vX.Y.Z`. Публикация по-прежнему выполняется стандартным `test-and-release.yml` через `ioBroker/testing-action-deploy@v1` и Trusted Publishing; ручной `npm publish` в CI не добавляй. Для такой схемы используй `release-preflight.mjs . --profile=custom-approved`: профиль не требует release-script, но проверяет версии, changelog и тот же стандартный workflow.
+Если `@alcalzone/release-script` не используется, допустим ручной tag release через явно выбранный `custom-approved` profile. Синхронизируй `package.json.version` и `io-package.json.common.version`, проверь package metadata, оформи changelog в README и следующий WIP, создай tag `vX.Y.Z`, затем запусти release workflow с обязательными validations. Профиль проверяет tag trigger, validation-job contents, все `needs`, tag condition, OIDC permissions, отсутствие npm token, единственный publish path, GitHub Release и version consistency. Общая Action/path/symlink/YAML policy сохраняется. См. `workflows/09-release.md`.
 
 Перед релизом:
 
@@ -84,17 +84,17 @@ STABLE — отдельный процесс после достаточного
 
 ## 7. npm Trusted Publishing
 
-Официальный [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) использует OIDC и не требует долговременного `NPM_TOKEN`, если publisher настроен правильно. Схема не зависит от release-script: она работает и при ручном создании тега `vX.Y.Z`, если публикующий workflow запускается по этому тегу.
+Официальный [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) использует OIDC и не требует долговремого npm publish token, если publisher настроен правильно. Схема не зависит от release-script и может работать при ручном создании тега `vX.Y.Z`, если доверенное workflow настроено точно и проходит проверки.
 
 На текущей документации npm необходимы npm CLI `11.5.1+` и Node.js `22.14.0+`. Проверяй актуальные требования перед релизом.
 
 Для GitHub Actions:
 
-- workflow запускается по релизным тегам `vX.Y.Z` и при необходимости prerelease тегам;
-- `permissions.id-token: write` включено;
+- GitHub Actions workflow запускается по tags; npm docs требуют указать owner/organization, repository, workflow filename (только filename, включая `.yml`/`.yaml`) и при необходимости environment;
+- `permissions.id-token: write` включено на publish job; выдавай минимум permissions;
 - `actions/setup-node` настроен с `registry-url: https://registry.npmjs.org`;
-- caching отключён в publish workflow, как рекомендует npm;
-- публикация выполняется через `ioBroker/testing-action-deploy@v1` (Trusted Publishing, без `npm-token`);
-- имя репозитория, имя файла workflow (`test-and-release.yml`) и GitHub environment (если используется) точно совпадают с настройкой Trusted Publisher в npm.
+- для прямого npm publish на release workflow caching не используется, как рекомендует npm;
+- публикация выполняется без долгосрочного npm token; `id-token: write` позволяет GitHub выдать OIDC token;
+- package `repository.url` точно соответствует GitHub repository. Настройку Trusted Publisher выполняет владелец пакета на npmjs.com; GitHub-hosted runners поддерживаются, self-hosted runners в текущей npm документации не поддерживаются.
 
 Пример workflow — `templates/github-actions/test-and-release.yml` (официальный шаблон `@iobroker/create-adapter` с действием `ioBroker/testing-action-deploy`). Используй конфигурацию, соответствующую выбранному способу публикации. Версия Node.js — 22.x; измени только после проверки актуальных требований npm и adapter engines.

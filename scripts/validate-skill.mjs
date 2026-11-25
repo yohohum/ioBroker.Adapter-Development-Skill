@@ -18,7 +18,7 @@ const required = [
     'workflows/04-implementation.md', 'workflows/05-admin-ui.md', 'workflows/06-debugging.md',
     'workflows/07-testing.md', 'workflows/08-release-gate.md', 'workflows/09-release.md',
     'scripts/adapter-preflight.mjs', 'scripts/check-object-dump.mjs', 'scripts/check-translations.mjs', 'scripts/release-preflight.mjs',
-    'scripts/lib/action-refs.mjs', 'scripts/lib/deploy-condition.mjs', 'scripts/lib/publish-workflow.mjs',
+    'scripts/lib/action-refs.mjs', 'scripts/lib/deploy-condition.mjs', 'scripts/lib/publish-workflow.mjs', 'scripts/lib/custom-release-workflow.mjs',
     'scripts/run-adapter-checks.sh', 'scripts/validate-skill.mjs',
     'templates/adapter-tests/testPackageFiles.cjs', 'templates/adapter-tests/testAdapter.integration.cjs',
     'templates/github-actions/adapter-ci.yml', 'templates/github-actions/test-and-release.yml',
@@ -40,7 +40,7 @@ if (!frontmatter.startsWith('---') || !/\nname:\s*iobroker-adapter-development\n
 const nodeFiles = [
     'scripts/adapter-preflight.mjs', 'scripts/check-object-dump.mjs',
     'scripts/check-translations.mjs', 'scripts/release-preflight.mjs', 'scripts/validate-skill.mjs',
-    'scripts/lib/action-refs.mjs', 'scripts/lib/deploy-condition.mjs', 'scripts/lib/publish-workflow.mjs',
+    'scripts/lib/action-refs.mjs', 'scripts/lib/deploy-condition.mjs', 'scripts/lib/publish-workflow.mjs', 'scripts/lib/custom-release-workflow.mjs',
     'templates/adapter-tests/testPackageFiles.cjs',
     'templates/adapter-tests/testAdapter.integration.cjs'
 ];
@@ -140,7 +140,7 @@ for (const file of markdownFiles) {
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        if (line.includes('npm-publish.yml') && !/(не\s+использу|НЕ\s+использу|не\s+утвержда|НЕ\s+утвержда|не\s+поддержива|НЕ\s+поддержива|not\s+use|does\s+not\s+approve|not\s+supported|не\s+создава|НЕ\s+создава|do\s+not\s+create)/i.test(line)) {
+        if (line.includes('npm-publish.yml') && !/(не\s+использу|НЕ\s+использу|не\s+утвержда|НЕ\s+утвержда|не\s+поддержива|НЕ\s+поддержива|not\s+use|does\s+not\s+approve|not\s+supported|не\s+создава|НЕ\s+создава|do\s+not\s+create|не\s+добавляй)/i.test(line)) {
             failed = true;
             console.error(`Ссылка на несуществующий npm-publish.yml в ${path.relative(root, file)} (строка ${i + 1})`);
         }
@@ -269,7 +269,7 @@ if (!englishTree || !russianTree || JSON.stringify(englishTree) !== JSON.stringi
         'references/official-sources.md', 'references/object-model.md', 'references/security.md', 'references/transports.md', 'references/admin-config.md', 'references/testing.md', 'references/release-and-repository.md',
         'workflows/01-discovery.md', 'workflows/02-scaffolding.md', 'workflows/03-architecture.md', 'workflows/04-implementation.md', 'workflows/05-admin-ui.md', 'workflows/06-debugging.md', 'workflows/07-testing.md', 'workflows/08-release-gate.md', 'workflows/09-release.md',
         'scripts/adapter-preflight.mjs', 'scripts/check-object-dump.mjs', 'scripts/check-translations.mjs', 'scripts/release-preflight.mjs', 'scripts/run-adapter-checks.sh', 'scripts/validate-skill.mjs',
-        'scripts/lib/action-refs.mjs', 'scripts/lib/deploy-condition.mjs', 'scripts/lib/publish-workflow.mjs',
+        'scripts/lib/action-refs.mjs', 'scripts/lib/deploy-condition.mjs', 'scripts/lib/publish-workflow.mjs', 'scripts/lib/custom-release-workflow.mjs',
         'templates/adapter-tests/testPackageFiles.cjs', 'templates/adapter-tests/testAdapter.integration.cjs', 'templates/changelog/CHANGELOG_OLD.md', 'templates/changelog/README-changelog-section.md', 'templates/release/releaseconfig.json', 'templates/github-actions/adapter-ci.yml', 'templates/github-actions/test-and-release.yml',
         'test/run-regression-tests.mjs'
     ]);
@@ -354,6 +354,57 @@ if (skillContent.includes('обязательно') && skillContent.includes('DE
     console.error('SKILL.md всё ещё требует обязательных DEVELOPMENT_NOTES.md после каждого этапа');
 }
 
+// 10a. Release-documentation regressions: changelog workflow and checker rules.
+const releaseGateDoc = fs.readFileSync(path.join(root, 'workflows/08-release-gate.md'), 'utf8');
+const releaseDoc = fs.readFileSync(path.join(root, 'workflows/09-release.md'), 'utf8');
+const changelogTemplate = fs.readFileSync(path.join(root, 'templates/changelog/README-changelog-section.md'), 'utf8');
+const changelogArchive = fs.readFileSync(path.join(root, 'templates/changelog/CHANGELOG_OLD.md'), 'utf8');
+const changelogDocs = `${releaseDoc}\n${releaseGateDoc}\n${changelogTemplate}\n${changelogArchive}`;
+const forbiddenChangelogInstruction = /(?:^|\n)(?![^\n]*(?:не\s+(?:переноси|архивируй)|do\s+not\s+(?:move|transfer|archive)))[^\n]*(?:перенеси|переносить|переносится|архивируй|архивировать|move|transfer|archive)[^\n]*(?:WORK IN PROGRESS|WIP)[^\n]*CHANGELOG_OLD\.md/im;
+if (forbiddenChangelogInstruction.test(changelogDocs)) {
+    failed = true;
+    console.error('Release docs appear to instruct archiving WORK IN PROGRESS into CHANGELOG_OLD.md.');
+}
+for (const [label, pattern] of [
+    ['release-script converts WIP in README', /release-script[\s\S]{0,180}(?:WORK IN PROGRESS|WIP)[\s\S]{0,180}(?:README\.md|changelog)/i],
+    ['CHANGELOG_OLD archives versions beyond five', /CHANGELOG_OLD\.md[\s\S]{0,260}(?:последних пяти|last five)[\s\S]{0,180}(?:S6020|стар|older)/i],
+    ['S6020 is documented', /S6020/i],
+]) {
+    if (!pattern.test(changelogDocs)) {
+        failed = true;
+        console.error(`Changelog regression check failed: ${label}.`);
+    }
+}
+
+// Rule documentation must reflect the verified repochecker snapshot and keep
+// E6012/E6013 distinct. The source snapshot is recorded in official-sources.md.
+const ruleBlocks = releaseGateDoc.split(/\n(?=- \*\*)/);
+const e6012Block = ruleBlocks.find((block) => block.includes('E6012')) ?? '';
+const e6013Block = ruleBlocks.find((block) => block.includes('E6013')) ?? '';
+const w5042Block = releaseGateDoc.split('\n').find((line) => line.startsWith('- **W5042')) ?? '';
+if (!e6012Block.includes('Error') || !/npm\s+install|npm\s+i/i.test(e6012Block) || !/README/.test(e6012Block)) {
+    failed = true;
+    console.error('E6012 documentation must describe its Error severity and direct npm installation condition.');
+}
+if (!e6013Block.includes('Error') || !/GitHub|github/i.test(e6013Block) || !/ZIP/i.test(e6013Block) || e6013Block === e6012Block) {
+    failed = true;
+    console.error('E6013 documentation must separately describe GitHub/ZIP installation conditions and Error severity.');
+}
+const w5042Algorithm = releaseGateDoc.split('\n').find((line) => line.startsWith('- **Обязательный алгоритм W5042')) ?? '';
+if (!/production/.test(w5042Block) || !/devDependencies/.test(w5042Block) ||
+    !/@playwright\/test/.test(w5042Block) || !/admin\/src/.test(w5042Block) ||
+    !/test files|тестовые файлы/i.test(w5042Block) || !/механически|mechanically/i.test(w5042Algorithm) ||
+    !/build/.test(w5042Block) || !/найти все места использования/i.test(w5042Algorithm)) {
+    failed = true;
+    console.error('W5042 documentation must distinguish dependency environments and explicitly cover scanner scope, tests and admin/src.');
+}
+if (!/W2004/.test(releaseGateDoc) || !/E2004/.test(releaseGateDoc) ||
+    !/W2004[^\n]*Warning/.test(releaseGateDoc) || !/E2004[^\n]*E2004 отсутствует/i.test(releaseGateDoc) ||
+    !/npm view/.test(releaseGateDoc) || !/common\.news/.test(releaseGateDoc)) {
+    failed = true;
+    console.error('Repochecker news rule codes, severity and verified absence of E2004 must match upstream 5.24.3.');
+}
+
 // 11. Все 11 языков в политике переводов
 const requiredLangs = ['en', 'de', 'ru', 'pt', 'nl', 'fr', 'it', 'es', 'pl', 'uk', 'zh-cn'];
 const langPolicyFiles = ['SKILL.md', 'workflows/05-admin-ui.md', 'references/admin-config.md', 'references/official-sources.md'];
@@ -389,8 +440,15 @@ if (!/check-translations\.mjs.*--mode=new/.test(runChecksContent)) {
     console.error('scripts/run-adapter-checks.sh не вызывает scripts/check-translations.mjs с --mode=new');
 }
 
-// 14. custom-approved не является обходом стандартного release workflow:
-// release-preflight проверяет тот же test-and-release.yml и отклоняет npm-publish.yml.
+// 14. Profiles remain structurally separate: the standard profile uses the
+// official validator; custom-approved uses a tag/OIDC contract after the same
+// shared Action, nested workflow, composite, path and YAML security checks.
+const customProfileSource = fs.readFileSync(path.join(root, 'scripts/lib/custom-release-workflow.mjs'), 'utf8');
+if (!customProfileSource.includes('validateCustomReleaseWorkflow') ||
+    !fs.readFileSync(path.join(root, 'scripts/release-preflight.mjs'), 'utf8').includes('validateCustomReleaseWorkflow')) {
+    failed = true;
+    console.error('custom-approved must use its separate tag-based Trusted Publishing structural validator.');
+}
 
 // 15. Определение режима локализации не использует Git history, возраст или число коммитов
 for (const forbidden of ['git log', 'commitCount', 'rev-list', 'git rev-parse']) {

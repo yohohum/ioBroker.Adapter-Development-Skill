@@ -66,7 +66,8 @@
 │   └── lib/
 │       ├── action-refs.mjs
 │       ├── deploy-condition.mjs
-│       └── publish-workflow.mjs
+│       ├── publish-workflow.mjs
+│       └── custom-release-workflow.mjs
 ├── templates/
 │   ├── adapter-tests/
 │   │   ├── testPackageFiles.cjs
@@ -110,7 +111,7 @@
 - `actions/upload-artifact@v6` — основание: используется внутри `ioBroker/testing-action-adapter@v1` для архивации скриншотов; может потребоваться для пользовательской публикации артефактов.
 - `softprops/action-gh-release@v3` — основание: используется внутри `ioBroker/testing-action-deploy@v1` для создания GitHub-релиза; может потребоваться для пользовательских сценариев релиза.
 
-Ref сверяется целиком с политикой. Неизвестные Actions, внешние reusable workflows и недоступные для проверки конструкции отклоняются. Локальные reusable workflows и composite Actions обходятся рекурсивно; inputs reusable workflow сверяются с `on.workflow_call`. Inputs проверяются по именам, обязательности, типам и документированным ограничениям официальных `action.yml` (для `actions/upload-artifact@v6` допустимы только name, path, if-no-files-found, retention-days, compression-level, overwrite, include-hidden-files; параметра `archive` в официальном контракте v6 нет). Пользовательский профиль `custom-approved` использует тот же allowlist и тот же стандартный `.github/workflows/test-and-release.yml`, что и `create-adapter-default`; он не утверждает альтернативный `npm-publish.yml`, не расширяет набор разрешённых Actions и не снимает fail-closed политику. Профиль можно использовать для ручного релиза с тегом без release-script: он не требует `@alcalzone/release-script`, но сохраняет те же требования к workflow. Каждое действие из allowlist требует фиксированного ref и задокументированного контракта. Чтение workflow и action metadata использует открытый descriptor после повторной проверки canonical path и сверки идентичности открытого файла; внешние и dangling symlink отклоняются. Это снижает TOCTOU-риск замены пути, но не блокирует конкурентную запись в тот же inode; проверка предназначена для локального checkout без враждебного параллельного писателя. FAIL означает обнаруженное нарушение, NEEDS REVIEW — безопасность автоматически не подтверждена.
+Ref сверяется целиком с политикой. Неизвестные Actions, внешние reusable workflows и недоступные для проверки конструкции отклоняются. Локальные reusable workflows и composite Actions проверяются рекурсивно; inputs/secrets сверяются с декларациями. `custom-approved` — отдельный явно выбранный tag-based profile с npm Trusted Publishing/OIDC: trigger по `vX.Y.Z`, проверяемые build/lint/tests, deploy с `needs` на все проверки, version consistency и отсутствие долгоживущего npm token. Допустим один `ioBroker/testing-action-deploy@v1` либо строго ограниченный `npm publish --provenance` step с duplicate-version guard. Standard `create-adapter-default` остаётся безопасным default и не меняется. Оба профиля сохраняют Action allowlist, ref pinning, recursive local workflow/composite validation, inputs/secrets, cycle/path/symlink protection и duplicate-key YAML handling. Чтение workflow/action metadata сверяет canonical path и identity открытого файла. Детали: `workflows/09-release.md` и `node scripts/release-preflight.mjs --help`.
 
 ## Установка в репозиторий агента
 

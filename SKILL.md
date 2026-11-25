@@ -120,7 +120,7 @@ metadata:
 - проверка `OBJECTDUMP` и онлайн Adapter Checker, если адаптер готовится к публичной приёмке;
 - корректные версии package/io-package и готовый changelog;
 - CI с проверками на поддерживаемых Node.js;
-- релизный workflow с корректно настроенным npm Trusted Publisher, если публикация выполняется через OIDC.
+- релизный workflow с явным профилем: стандартный `create-adapter-default` по умолчанию или строго валидируемый tag-based `custom-approved` с npm Trusted Publishing/OIDC.
 
 Смотри подробные условия в `workflows/08-release-gate.md` и `workflows/09-release.md`.
 

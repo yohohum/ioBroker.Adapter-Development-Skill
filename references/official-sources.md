@@ -45,7 +45,7 @@
 | [@iobroker/testing](https://github.com/ioBroker/testing) | `tests.packageFiles`, `tests.integration`, тестовый harness |
 | [@iobroker/eslint-config](https://github.com/ioBroker/eslint-config) | Официальная конфигурация ESLint |
 | [State roles (STATE_ROLES.md)](https://github.com/ioBroker/ioBroker.docs/blob/master/docs/en/dev/stateroles.md) | Семантика и атрибуты ролей `common.role` для состояний адаптера |
-| [@iobroker/repochecker](https://github.com/ioBroker/ioBroker.repochecker) | Автоматическая проверка репозитория адаптера |
+| [@iobroker/repochecker](https://github.com/ioBroker/ioBroker.repochecker) | Проверяй код и severity установленной версии. npm package `5.24.3` (проверен по опубликованному tarball): отсутствующая в npm версия из `common.news` — W2004 Warning; E2004 отсутствует в issue catalog. W5042 scan исключает `admin/`, `test/`, `scripts/`, `build/`, docs и test/config suffixes. README E6012/E6013 — разные install patterns; S6020 касается старых changelog entries. |
 | [OBJECTDUMP.md](https://github.com/ioBroker/ioBroker.repochecker/blob/master/OBJECTDUMP.md) | Создание и проверка дампа объектов |
 | [Adapter Checker](https://adapter-check.iobroker.in/) | Онлайн-проверка репозитория адаптера |
 | [ioBroker.repositories](https://github.com/ioBroker/ioBroker.repositories) | Требования и добавление адаптера в latest/stable |
@@ -58,6 +58,8 @@
 | [release-script ioBroker plugin](https://github.com/AlCalzone/release-script) | Плагин `@alcalzone/release-script-plugin-iobroker`, обновление `io-package.json` и `news` |
 | [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) | OIDC-публикация npm без долговременного npm token |
 | [GitHub Actions OIDC](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/about-security-hardening-with-openid-connect) | Безопасная идентификация workflow |
+| [GitHub Actions workflow syntax](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions) | События, `needs`, `if`, permissions, reusable workflows |
+| [Official ioBroker Actions](https://github.com/ioBroker/testing) | Проверяй фактические contracts `testing-action-check`, `testing-action-adapter`, `testing-action-deploy` |
 | [Node.js Release schedule](https://github.com/nodejs/Release) | Поддерживаемые версии Node.js |
 
 ## Процедура проверки источника
