@@ -45,7 +45,7 @@ if (profile === null) {
     if (devDeps['@alcalzone/release-script']) {
         warnings.push('Профиль не указан, но обнаружен @alcalzone/release-script. Рекомендуется --profile=create-adapter-default.');
     } else {
-        reviewNeeded.push('Профиль не указан. Укажите --profile=create-adapter-default или --profile=custom-approved.');
+        reviewNeeded.push('Профиль не указан. Укажите --profile=create-adapter-default или --profile=custom-approved (ручной релиз с тегом без release-script).');
     }
 }
 
@@ -121,8 +121,10 @@ if (profile === 'create-adapter-default' || profile === null) {
 
 // --- Профиль custom-approved ---
 if (profile === 'custom-approved') {
-    // The profile does not approve an alternative publication workflow. It
-    // applies the same workflow and Action policy as the standard profile.
+    // Профиль предназначен для ручного релиза с тегом и Trusted Publishing.
+    // release-script он не требует, но применяет ту же workflow и Action
+    // policy, что и стандартный профиль, и не утверждает альтернативный
+    // publication workflow.
     if (!pkg.version || !ioPkg.common?.version) {
         errors.push('Не удаётся проверить версию: отсутствует package.json version или io-package.json common.version.');
     }

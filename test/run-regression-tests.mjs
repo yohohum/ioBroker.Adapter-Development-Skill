@@ -849,6 +849,24 @@ test('custom-approved принимает только стандартный tes
   assertExitCode(result, 0, 'Корректный стандартный workflow должен пройти в custom-approved');
 });
 
+test('custom-approved поддерживает ручной релиз с тегом без release-script', () => {
+  const source = requireFixture('release/correct');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-manual-release-'));
+  fs.cpSync(source, temp, { recursive: true });
+  try {
+    const pkgPath = path.join(temp, 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    delete pkg.devDependencies;
+    delete pkg.scripts.release;
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    fs.rmSync(path.join(temp, '.releaseconfig.json'), { force: true });
+    const result = runCommand('node', [RELEASE_PREFLIGHT, temp, '--profile=custom-approved', '--no-git-check']);
+    assertExitCode(result, 0, 'Ручной релиз с тегом без release-script должен проходить в custom-approved');
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test('custom-approved отклоняет альтернативный npm-publish workflow', () => {
   const source = requireFixture('release/correct');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-custom-npm-publish-'));

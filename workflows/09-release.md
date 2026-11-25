@@ -8,7 +8,9 @@
 
 Поддерживай раздел **WORK IN PROGRESS** в начале `README.md` (см. шаблон `templates/changelog/README-changelog-section.md`). Записи должны быть понятны пользователю и описывать значимые изменения. Не рассчитывай, что release-script автоматически напишет содержательный changelog по Git commits.
 
-При подготовке релиза перенеси записи из WORK IN PROGRESS в `CHANGELOG_OLD.md` с указанием версии и даты, затем очисти раздел WORK IN PROGRESS для следующей версии.
+При релизе **WORK IN PROGRESS** становится заголовком новой версии с датой в changelog `README.md` — это делает release-script (при ручном релизе обнови заголовок сам). Не переноси записи из WORK IN PROGRESS в `CHANGELOG_OLD.md`: иначе changelog в README всегда будет пустым.
+
+`CHANGELOG_OLD.md` — архив только для старых версий, которые выходят за пределы последних пяти релизов (правило repochecker S6020). Когда в changelog `README.md` накапливается больше пяти версий, переноси самые старые записи в `CHANGELOG_OLD.md`, сохраняя последние пять в README.
 
 Не создавай отдельный `CHANGELOG.md` — актуальная схема хранит changelog в README, а старые записи архивируются в `CHANGELOG_OLD.md`.
 
@@ -50,15 +52,29 @@ npm run release patch -- --dry
 
 `package.json` и `io-package.json` должны иметь согласованные версии согласно правилам используемого plugin. Для prerelease режимов явно проверь опцию `--ioPackageNoPrerelease` и не включай её без обоснования. Если она используется, запускай `adapter-preflight.mjs` и `release-preflight.mjs` с флагом `--allow-io-package-no-prerelease`; не ослабляй синхронизацию версий для обычных релизов.
 
+### 3.1. Ручной релиз с тегом и Trusted Publishing
+
+Если `@alcalzone/release-script` не используется, допустима схема с ручным bump версии и ручным тегом. Для неё используй профиль `custom-approved`:
+
+1. Синхронно обнови `version` в `package.json` и `common.version` в `io-package.json`, а также запись `common.news` для новой версии.
+2. В changelog `README.md` замени заголовок **WORK IN PROGRESS** на `### <version> (YYYY-MM-DD)` и добавь новый **WORK IN PROGRESS** для следующей версии. Не переноси changelog в `CHANGELOG_OLD.md`.
+3. Закоммить изменения, создай тег `vX.Y.Z` на этом коммите и запушь ветку и тег.
+4. Публикацию по тегу выполняет тот же `.github/workflows/test-and-release.yml` через `ioBroker/testing-action-deploy@v1` и Trusted Publishing. Не добавляй в workflow ручной `npm publish`.
+5. Проверь `node /path/to/skill/scripts/release-preflight.mjs . --profile=custom-approved`.
+
+`custom-approved` не требует `@alcalzone/release-script`, но требует тот же стандартный `test-and-release.yml`, тот же allowlist Actions и не поддерживает альтернативный `npm-publish.yml`. Он не ослабляет проверки публикации.
+
 ## 4. Git tag и workflows
 
-Release script создаёт release commit/tag и push согласно своей конфигурации. Публикация выполняется через workflow `test-and-release.yml`, генерируемый `@iobroker/create-adapter`, который использует `ioBroker/testing-action-deploy@v1`.
+При использовании release-script он создаёт release commit/tag и push согласно своей конфигурации. При ручном релизе создай и запушь тег `vX.Y.Z` сам (см. 3.1). Публикация выполняется через workflow `test-and-release.yml`, генерируемый `@iobroker/create-adapter`, который использует `ioBroker/testing-action-deploy@v1`.
 
-НЕ используй собственный `npm-publish.yml` или ручной `npm publish` в CI.
+НЕ используй собственный `npm-publish.yml` или ручной `npm publish` в CI. Ручной релиз означает ручной bump и тег, а не ручную публикацию npm.
 
 CI для веток/PR и publish по тегам разделяй: публикация не должна срабатывать на произвольный push в main.
 
 ## 5. npm Trusted Publishing
+
+Схема Trusted Publishing не зависит от release-script: достаточно, чтобы публикующий workflow запускался по тегу `vX.Y.Z`. Она одинаково работает и с release-script, и с ручным тегом.
 
 В npmjs.com настрой Trusted Publisher для репозитория:
 
