@@ -925,8 +925,8 @@ for (const [label, mutateWorkflow, expected] of [
   ), 'does not match the reviewed'],
   ['неподдерживаемая версия контракта', (yaml) => yaml.replace('# release-guard-contract: v1', '# release-guard-contract: v2'), 'unsupported release-guard contract version'],
   ['убрана проверка semver тега', (yaml) => yaml.replace(
-    '          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release tag"; exit 1; }\n',
-    ''
+    '          TAG_VERSION=$(node -e \'',
+    '          # TAG_VERSION=$(node -e \''
   ), 'does not match the reviewed'],
   ['убрано сравнение с package.json', (yaml) => yaml.replace(
     '          PKG_VERSION="$(node -p "require(\'./package.json\').version")"\n',
@@ -1586,9 +1586,11 @@ function runReleaseGuard(tempDir, env = {}) {
   fs.writeFileSync(guardScriptPath, RELEASE_GUARD_SCRIPT);
   fs.chmodSync(guardScriptPath, 0o755);
 
+  const nodePath = path.join(SKILL_ROOT, 'node_modules');
+
   const result = spawnSync('bash', [guardScriptPath], {
     cwd: tempDir,
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...env, NODE_PATH: nodePath },
     encoding: 'utf8',
     timeout: 30000
   });
@@ -1847,6 +1849,64 @@ set -euo pipefail
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+// RT-15 through RT-40: SemVer 2.0.0 validation tests
+const semverTestCases = [
+  ['RT-15: v1.2.3-alpha.1 (valid prerelease)', 'v1.2.3-alpha.1', 0],
+  ['RT-16: v1.2.3-01 (leading zero in prerelease)', 'v1.2.3-01', 1],
+  ['RT-17: v1.2.3-alpha..beta (empty prerelease identifier)', 'v1.2.3-alpha..beta', 1],
+  ['RT-18: v1.2.3+build.1 (valid build metadata)', 'v1.2.3+build.1', 0],
+  ['RT-19: v1.2.3+build..1 (empty build identifier)', 'v1.2.3+build..1', 1],
+  ['RT-20: v1.2.3-rc.1+build.5 (valid prerelease + build)', 'v1.2.3-rc.1+build.5', 0],
+  ['RT-21: v1.2.3-rc..1 (empty prerelease identifier)', 'v1.2.3-rc..1', 1],
+  ['RT-22: v1.2.3-0 (zero prerelease)', 'v1.2.3-0', 0],
+  ['RT-23: v1.2.3-00 (leading zeros in prerelease)', 'v1.2.3-00', 1],
+  ['RT-24: v1.2.3-0001 (leading zeros in prerelease)', 'v1.2.3-0001', 1],
+  ['RT-25: v1.2.3-alpha-1 (valid prerelease with hyphen)', 'v1.2.3-alpha-1', 0],
+  ['RT-26: v1.2.3-alpha_1 (underscore in prerelease)', 'v1.2.3-alpha_1', 1],
+  ['RT-27: v1.2.3+001 (leading zeros in build metadata)', 'v1.2.3+001', 0],
+  ['RT-28: v1.2.3+build-1 (valid build with hyphen)', 'v1.2.3+build-1', 0],
+  ['RT-29: v1.2.3+build_1 (underscore in build metadata)', 'v1.2.3+build_1', 1],
+  ['RT-30: v1.2.3-α (non-ASCII in prerelease)', 'v1.2.3-α', 1],
+  ['RT-31: v1.2.3 (basic valid)', 'v1.2.3', 0],
+  ['RT-32: v1.2.3.4 (four parts)', 'v1.2.3.4', 1],
+  ['RT-33: vv1.2.3 (double v prefix)', 'vv1.2.3', 1],
+  ['RT-34: 1.2.3 (missing v prefix)', '1.2.3', 1],
+  ['RT-35: v 1.2.3 (space after v)', 'v 1.2.3', 1],
+  ['RT-36: v1.2.3  (trailing space)', 'v1.2.3 ', 1],
+  ['RT-37: v1.2.3\\n (trailing newline)', 'v1.2.3\n', 1],
+  ['RT-38: v01.2.3 (leading zero in major)', 'v01.2.3', 1],
+  ['RT-39: v1.02.3 (leading zero in minor)', 'v1.02.3', 1],
+  ['RT-40: v1.2.03 (leading zero in patch)', 'v1.2.03', 1],
+];
+
+for (const [label, tag, expectedCode] of semverTestCases) {
+  test(`${label} — Guard ${expectedCode === 0 ? 'PASS' : 'FAIL'}`, () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-' + label.replace(/[^a-z0-9-]/gi, '-').toLowerCase() + '-'));
+    try {
+      // Use version that matches the tag for valid cases, or a known version for invalid cases
+      // For valid tags, we need the version to match (without build metadata)
+      let fixtureVersion = '1.2.3';
+      if (tag === 'v1.2.3-alpha.1') fixtureVersion = '1.2.3-alpha.1';
+      else if (tag === 'v1.2.3+build.1') fixtureVersion = '1.2.3';
+      else if (tag === 'v1.2.3-rc.1+build.5') fixtureVersion = '1.2.3-rc.1';
+      else if (tag === 'v1.2.3-0') fixtureVersion = '1.2.3-0';
+      else if (tag === 'v1.2.3-alpha-1') fixtureVersion = '1.2.3-alpha-1';
+      else if (tag === 'v1.2.3+001') fixtureVersion = '1.2.3';
+      else if (tag === 'v1.2.3+build-1') fixtureVersion = '1.2.3';
+
+      setupFixture(tempDir, { package: { version: fixtureVersion }, ioPackage: { version: fixtureVersion } });
+      const mockBin = createMockNpm(tempDir, 'not-found');
+      const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: tag });
+      assertEqual(result.code, expectedCode, `${label}: expected exit code ${expectedCode}, got ${result.code}`);
+      if (expectedCode === 1) {
+        assertContains(result.stdout + result.stderr, '::error::', `${label}: should contain error message`);
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+}
 
 console.log('\n=== Итог ===');
 console.log(`  Всего: ${testStats.total}`);
