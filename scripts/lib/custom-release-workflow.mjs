@@ -42,6 +42,46 @@ const TOKEN_VALUE_PATTERN = /NPM_TOKEN|NODE_AUTH_TOKEN|_authToken|npm[_-]?token/
 const MIN_NODE = '22.14.0';
 const MIN_NPM = '11.5.1';
 
+// The custom profile does not interpret arbitrary shell. It requires one exact,
+// reviewed guard script with a versioned contract header. Any deviation (extra
+// fields, different comparisons, comments-only guards, wrong versions) is
+// rejected instead of being accepted through token matching.
+export const RELEASE_GUARD_CONTRACT_VERSION = 'v1';
+export function normalizeReleaseGuardScript(text) {
+    return String(text)
+        .replace(/\r\n/g, '\n')
+        .split('\n')
+        .map((line) => line.replace(/[ \t]+$/, ''))
+        .join('\n')
+        .replace(/^\n+/, '')
+        .replace(/\n+$/, '');
+}
+export const RELEASE_GUARD_SCRIPT = normalizeReleaseGuardScript([
+    'set -euo pipefail',
+    `# release-guard-contract: ${RELEASE_GUARD_CONTRACT_VERSION}`,
+    'TAG_VERSION="${GITHUB_REF_NAME#v}"',
+    '[[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release tag"; exit 1; }',
+    'PKG_VERSION="$(node -p "require(\'./package.json\').version")"',
+    'IO_VERSION="$(node -p "require(\'./io-package.json\').common.version")"',
+    'if [ "$TAG_VERSION" != "$PKG_VERSION" ] || [ "$TAG_VERSION" != "$IO_VERSION" ]; then',
+    '  echo "::error::Release versions do not match"',
+    '  exit 1',
+    'fi',
+    'PACKAGE_NAME="$(node -p "require(\'./package.json\').name")"',
+    'set +e',
+    'NPM_VIEW_OUTPUT="$(npm view "$PACKAGE_NAME@$PKG_VERSION" version 2>&1)"',
+    'NPM_VIEW_STATUS=$?',
+    'set -e',
+    'if [ "$NPM_VIEW_STATUS" -eq 0 ]; then',
+    '  echo "::error::Package version already exists"',
+    '  exit 1',
+    'fi',
+    'if ! printf \'%s\' "$NPM_VIEW_OUTPUT" | grep -Eq \'E404|404 Not Found|is not in (this|the) npm registry|No match found for version\'; then',
+    '  echo "::error::Unable to verify npm publication state: $NPM_VIEW_OUTPUT"',
+    '  exit 1',
+    'fi',
+].join('\n'));
+
 function asArray(value) {
     if (value === undefined || value === null) return [];
     return Array.isArray(value) ? value : [value];
@@ -176,19 +216,43 @@ function jobIsTagEligible(job) {
     return job?.if === undefined || job?.if === null || String(job.if).trim() === '';
 }
 
-function isVersionConsistencyStep(step) {
-    const run = typeof step?.run === 'string' ? step.run : '';
-    if (!run) return false;
-    const tagVersion = /TAG_VERSION\s*=\s*["'][^"']*GITHUB_REF_NAME[^"']*["']/i.test(run) ||
-        /GITHUB_REF_NAME[^\n]*(?:replace|slice|substring)/i.test(run);
-    const packageVersion = /(?:PKG_VERSION|PACKAGE_VERSION)\s*=\s*[^\n]*package\.json/i.test(run) ||
-        /node\s+-p[^\n]*package\.json/i.test(run);
-    const ioVersion = /(?:IO_VERSION|IO_PACKAGE_VERSION)\s*=\s*[^\n]*io-package\.json/i.test(run) ||
-        /node\s+-p[^\n]*io-package\.json/i.test(run);
-    const comparesVersions = /\[\[[\s\S]*?(?:TAG_VERSION|tagVersion)[\s\S]*?(?:PKG_VERSION|PACKAGE_VERSION)[\s\S]*?\|\|[\s\S]*?(?:IO_VERSION|IO_PACKAGE_VERSION)[\s\S]*?\]\]|(?:TAG_VERSION|tagVersion)[\s\S]*(?:PKG_VERSION|PACKAGE_VERSION)[\s\S]*(?:IO_VERSION|IO_PACKAGE_VERSION)/i.test(run);
-    const failsClosed = /exit\s+1|::error|throw\s+new\s+Error|process\.exit\(1\)/i.test(run);
-    const validatesSemverTag = /\^v\[0-9\].*\[0-9\].*\[0-9\]|semver\.valid|valid(?:ate)?\s+(?:release\s+)?tag/i.test(run);
-    return tagVersion && packageVersion && ioVersion && comparesVersions && failsClosed && validatesSemverTag;
+function inspectReleaseGuard(job, publishIndex, errors, wfName) {
+    const steps = Array.isArray(job?.steps) ? job.steps : [];
+    const candidates = steps.map((step, index) => ({ step, index }))
+        .filter(({ step }) => typeof step?.run === 'string' && /release-guard-contract\s*:/.test(step.run));
+    if (candidates.length === 0) {
+        errors.push(`${wfName}: job "deploy" must contain the reviewed release guard step; missing release-guard-contract marker.`);
+        return null;
+    }
+    if (candidates.length > 1) {
+        errors.push(`${wfName}: job "deploy" must contain exactly one release guard step; found ${candidates.length}.`);
+    }
+    for (const { step, index } of candidates) {
+        const versionMatch = String(step.run).match(/release-guard-contract\s*:\s*(\S+)/);
+        const version = versionMatch ? versionMatch[1] : null;
+        if (version !== RELEASE_GUARD_CONTRACT_VERSION) {
+            errors.push(`${wfName}: unsupported release-guard contract version "${version ?? 'unknown'}"; only ${RELEASE_GUARD_CONTRACT_VERSION} is accepted.`);
+        } else if (normalizeReleaseGuardScript(step.run) !== RELEASE_GUARD_SCRIPT) {
+            errors.push(`${wfName}: release guard step ${index + 1} does not match the reviewed ${RELEASE_GUARD_CONTRACT_VERSION} contract; unknown fields or shell changes are rejected.`);
+        }
+        if (step.if !== undefined && step.if !== null && String(step.if).trim() !== '') {
+            errors.push(`${wfName}: release guard step ${index + 1} must be unconditional (no if).`);
+        }
+        if (step['continue-on-error'] === true) {
+            errors.push(`${wfName}: release guard step ${index + 1} must not set continue-on-error: true.`);
+        }
+        if (step.shell !== 'bash') {
+            errors.push(`${wfName}: release guard step ${index + 1} must set shell: bash.`);
+        }
+    }
+    const canonical = candidates.filter(({ step }) => normalizeReleaseGuardScript(step.run) === RELEASE_GUARD_SCRIPT);
+    if (canonical.length === 1) {
+        if (publishIndex !== null && canonical[0].index > publishIndex) {
+            errors.push(`${wfName}: release guard must run before the publish step.`);
+        }
+        return canonical[0];
+    }
+    return null;
 }
 
 function collectTokenFindings(value, path = 'workflow') {
@@ -212,13 +276,12 @@ function collectTokenFindings(value, path = 'workflow') {
 
 function normalizePermissions(value, errors, location) {
     if (value === undefined) return null;
-    if (value === 'read-all') return Object.fromEntries([...ALLOWED_PERMISSION_KEYS].map((permission) => [permission, 'read']));
-    if (value === 'write-all') {
-        errors.push(`${location}: write-all permissions запрещены; явно укажите минимальный permissions mapping.`);
+    if (value === 'read-all' || value === 'write-all') {
+        errors.push(`${location}: wildcard permissions "${value}" запрещены; явно укажите минимальный permissions mapping.`);
         return {};
     }
     if (typeof value !== 'object' || Array.isArray(value)) {
-        errors.push(`${location}: permissions должна быть mapping, read-all или write-all; получено "${String(value)}".`);
+        errors.push(`${location}: permissions должна быть явным mapping; получено "${String(value)}".`);
         return {};
     }
     const result = {};
@@ -240,7 +303,18 @@ function normalizePermissions(value, errors, location) {
 }
 
 export function effectivePermissions(workflow, job, errors = [], wfName = 'workflow') {
+    if (workflow.permissions === undefined) {
+        errors.push(`${wfName}: workflow-level permissions должны быть заданы явно; не полагайтесь на repository defaults.`);
+    }
     const top = normalizePermissions(workflow.permissions, errors, `${wfName}: permissions`);
+    if (top) {
+        if (top['id-token'] === 'write') {
+            errors.push(`${wfName}: id-token: write разрешён только на уровне job "deploy", не на уровне workflow.`);
+        }
+        if (top.contents === 'write') {
+            errors.push(`${wfName}: contents: write разрешён только на уровне job "deploy", не на уровне workflow.`);
+        }
+    }
     if (job.permissions !== undefined) {
         // GitHub replaces the workflow-level map for a job-level map; omitted
         // permissions become none. Never merge these mappings.
@@ -253,20 +327,29 @@ export function effectivePermissions(workflow, job, errors = [], wfName = 'workf
     return top;
 }
 
-function hasSetupNodeWithRegistry(job) {
-    const steps = Array.isArray(job?.steps) ? job.steps : [];
-    return steps.some((step) => step?.uses === 'actions/setup-node@v6' &&
-        typeof step?.with?.['registry-url'] === 'string' &&
-        step.with['registry-url'] === 'https://registry.npmjs.org');
-}
-
-function validatePublishRuntimeAndCache(deploySteps, deployActionSteps, errors, wfName, root) {
-    const setupNodeSteps = deploySteps.map((step, index) => ({ step, index }))
+function validateDeployRuntime(deploySteps, deployActionSteps, deployPublishSteps, errors, wfName, root) {
+    const setupNodes = deploySteps.map((step, index) => ({ step, index }))
         .filter(({ step }) => step?.uses === 'actions/setup-node@v6');
-    for (const { step, index } of setupNodeSteps) {
-        const setupName = String(step.name ?? '').toLowerCase();
-        if (step.with?.['registry-url'] === 'https://registry.npmjs.org' || setupName.includes('publish') || setupName.includes('npm trusted')) {
-            nodeSetupIsCompliant(step, errors, `${wfName}: job "deploy" step ${index + 1}`, root);
+    if (setupNodes.length !== 1) {
+        errors.push(`${wfName}: custom-approved publish job must contain exactly one actions/setup-node step; found ${setupNodes.length}.`);
+    }
+    for (const { step, index } of setupNodes) {
+        const location = `${wfName}: job "deploy" step ${index + 1}`;
+        nodeSetupIsCompliant(step, errors, location, root);
+        const packageManagerCache = step.with?.['package-manager-cache'];
+        if (packageManagerCache !== false && String(packageManagerCache).toLowerCase() !== 'false') {
+            errors.push(`${location}: actions/setup-node must set package-manager-cache: false; implicit or dynamic cache is rejected.`);
+        }
+        if (step.with?.cache !== undefined && String(step.with.cache).trim() !== '') {
+            errors.push(`${location}: actions/setup-node must not enable dependency cache.`);
+        }
+        if (step.with?.['cache-dependency-path'] !== undefined && String(step.with['cache-dependency-path']).trim() !== '') {
+            errors.push(`${location}: actions/setup-node must not set cache-dependency-path when caching is disabled.`);
+        }
+    }
+    for (const { step, index } of deploySteps.map((step, index) => ({ step, index }))) {
+        if (typeof step?.uses === 'string' && step.uses.startsWith('./')) {
+            errors.push(`${wfName}: job "deploy" step ${index + 1} must not use a local action/workflow; it can change the publish environment.`);
         }
     }
 
@@ -278,10 +361,6 @@ function validatePublishRuntimeAndCache(deploySteps, deployActionSteps, errors, 
         }
         const nodeVersion = step.with?.['node-version'];
         if (!isStaticNodeRequirement(nodeVersion)) errors.push(`${wfName}: job "deploy" step ${index + 1} node-version must be static and >=${MIN_NODE}.`);
-    }
-
-    if (setupNodeSteps.length === 0 && deployActionSteps.length === 0) {
-        errors.push(`${wfName}: deploy must use actions/setup-node@v6.`);
     }
 
     const npmInstallSteps = deploySteps.map((step, index) => ({ step, index }))
@@ -305,6 +384,22 @@ function validatePublishRuntimeAndCache(deploySteps, deployActionSteps, errors, 
     } else if (!pinnedNpm && deploySteps.some((step) => typeof step?.run === 'string' && PUBLISH_COMMAND.test(step.run))) {
         errors.push(`${wfName}: direct npm publication must set up npm CLI with a numeric version >=${MIN_NPM} before publish.`);
     }
+
+    const setupNode = setupNodes[0];
+    if (deployPublishSteps.length === 1) {
+        const publishIndex = deployPublishSteps[0].index;
+        if (setupNode) {
+            if (setupNode.step.with?.['registry-url'] !== 'https://registry.npmjs.org') {
+                errors.push(`${wfName}: direct publish setup-node must set registry-url https://registry.npmjs.org.`);
+            }
+            if (setupNode.index > publishIndex) {
+                errors.push(`${wfName}: setup-node must run before npm publish.`);
+            }
+        }
+    }
+    if (deployActionSteps.length === 1 && setupNode && setupNode.index > deployActionSteps[0].index) {
+        errors.push(`${wfName}: setup-node must run before ioBroker/testing-action-deploy@v1.`);
+    }
 }
 
 function hasGitHubReleaseStep(job) {
@@ -319,18 +414,6 @@ function findPublishSteps(job) {
     return steps
         .map((step, index) => ({ step, index }))
         .filter(({ step }) => typeof step?.run === 'string' && /\b(?:npm|pnpm|yarn)\s+(?:publish|stage\s+publish)\b/i.test(step.run));
-}
-
-function hasVersionGuardBeforePublish(job, publishIndex) {
-    const steps = Array.isArray(job?.steps) ? job.steps : [];
-    return steps.slice(0, publishIndex).some((step) => {
-        const run = typeof step?.run === 'string' ? step.run : '';
-        const checksRegistry = /\bnpm\s+view\b/i.test(run);
-        const checksVersion = /GITHUB_REF_NAME|package\.json|npm\s+pkg\s+get\s+version/i.test(run);
-        const rejectsExisting = /if\s+[^\n]*(?:npm\s+view|VERSION_EXISTS|already\s+published)[^\n]*;?\s*then[\s\S]*?(?:exit\s+1|::error)/i.test(run) ||
-            /npm\s+view[\s\S]*?if\s+[^\n]*(?:npm\s+view|VERSION_EXISTS)[\s\S]*?exit\s+1/i.test(run);
-        return checksRegistry && checksVersion && rejectsExisting;
-    });
 }
 
 export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow', root = process.cwd() } = {}) {
@@ -575,13 +658,9 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow', r
             errors.push(`${wfName}: npm token references are prohibited in publish step ${index + 1}.`);
         }
     }
-    validatePublishRuntimeAndCache(deploySteps, deployActionSteps, errors, wfName, root);
-    const versionCheckSteps = deploySteps
-        .map((step, index) => ({ step, index }))
-        .filter(({ step }) => isVersionConsistencyStep(step));
-    if (versionCheckSteps.length === 0) {
-        errors.push(`${wfName}: job "deploy" должен содержать step проверки соответствия тега версиям package.json и io-package.json до публикации (GITHUB_REF_NAME, package.json, io-package.json, fail closed).`);
-    }
+    validateDeployRuntime(deploySteps, deployActionSteps, deployPublishSteps, errors, wfName, root);
+    const publishStep = deployPublishSteps[0] ?? deployActionSteps[0] ?? null;
+    inspectReleaseGuard(deploy, publishStep ? publishStep.index : null, errors, wfName);
 
     const publishLikeSteps = [];
     for (const [jobName, job] of Object.entries(jobs)) {
@@ -618,9 +697,6 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow', r
             String(deployStep.with['npm-token']).trim() !== '') {
             errors.push(`${wfName}: ioBroker/testing-action-deploy@v1 не должен получать npm-token при Trusted Publishing.`);
         }
-        if (versionCheckSteps.length > 0 && versionCheckSteps[0].index > deployActionSteps[0].index) {
-            errors.push(`${wfName}: проверка версии должна выполняться до publish step.`);
-        }
     }
 
     if (deployPublishSteps.length === 1) {
@@ -635,27 +711,11 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow', r
         if (TOKEN_VALUE_PATTERN.test(run)) {
             errors.push(`${wfName}: npm publish не должен ссылаться на npm token; используйте OIDC.`);
         }
-        const registrySetupIndex = deploySteps.findIndex((candidate) => candidate?.uses === 'actions/setup-node@v6' && candidate?.with?.['registry-url'] === 'https://registry.npmjs.org');
-        if (registrySetupIndex < 0 || registrySetupIndex > index) errors.push(`${wfName}: setup-node@v6 with registry-url https://registry.npmjs.org must precede publish.`);
-        if (!hasVersionGuardBeforePublish(deploy, index)) {
-            errors.push(`${wfName}: перед ручным npm publish требуется fail-closed проверка отсутствия уже опубликованной версии (npm view + exit 1).`);
-        }
         if (!hasGitHubReleaseStep(deploy)) {
             errors.push(`${wfName}: для ручного npm publish требуется step создания GitHub Release (gh release create или softprops/action-gh-release@v3).`);
         }
-        if (versionCheckSteps.length > 0 && versionCheckSteps[0].index > index) {
-            errors.push(`${wfName}: проверка версии должна выполняться до publish step.`);
-        }
         const publishWith = step.with ?? {};
         if (publishWith['access'] === 'public' || publishWith['provenance'] === false) errors.push(`${wfName}: npm publish must not disable provenance.`);
-        const registrySetups = deploySteps.map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
-            .filter(({ candidate }) => candidate?.uses === 'actions/setup-node@v6' && candidate?.with?.['registry-url'] === 'https://registry.npmjs.org');
-        for (const { candidate, candidateIndex } of registrySetups) {
-            nodeSetupIsCompliant(candidate, errors, `${wfName}: job "deploy" step ${candidateIndex + 1}`, root);
-        }
-        const setupNodeStep = deploySteps[registrySetupIndex];
-        if (setupNodeStep?.with?.['package-manager-cache'] !== false) errors.push(`${wfName}: direct publish setup-node must set package-manager-cache: false.`);
-        if (setupNodeStep?.with?.cache !== undefined && setupNodeStep.with.cache !== '') errors.push(`${wfName}: direct publish setup-node must not enable dependency cache.`);
     }
 
     if (deployActionSteps.length === 1) {
@@ -673,4 +733,4 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow', r
     return { errors, warnings, reviews };
 }
 
-export { isReleaseTagPattern, isVersionConsistencyStep };
+export { isReleaseTagPattern };

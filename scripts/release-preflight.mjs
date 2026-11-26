@@ -41,7 +41,13 @@ The custom profile requires a workflow that:
     accepted with an explicit numeric npm-version >= 11.5.1 and
     package-cache: 'false');
   - checks tag/package.json/io-package.json version consistency and rejects an
-    already published version before publish.
+    already published version before publish. The version guard must be the
+    exact reviewed script with header release-guard-contract: v1 (fail-closed:
+    SemVer tag, package.json, io-package.json, absence of the version in npm,
+    and stop on any error);
+  - does not allow read-all/write-all; requires an explicit permissions
+    mapping and forbids id-token: write / contents: write at workflow level
+    (they are allowed only on the deploy job);
 `);
     process.exit(0);
 }

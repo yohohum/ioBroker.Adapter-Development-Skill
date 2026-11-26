@@ -6,7 +6,7 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { load as loadYaml } from 'js-yaml';
 import { readVerifiedText, validateWorkflowActions, validateWorkflowFile } from '../scripts/lib/action-refs.mjs';
-import { effectivePermissions, isNpmCliPinSufficient, isStaticNodeRequirement } from '../scripts/lib/custom-release-workflow.mjs';
+import { RELEASE_GUARD_SCRIPT, effectivePermissions, isNpmCliPinSufficient, isStaticNodeRequirement } from '../scripts/lib/custom-release-workflow.mjs';
 
 const TEST_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname));
 const SKILL_ROOT = path.resolve(TEST_ROOT, '..');
@@ -894,12 +894,77 @@ for (const [label, mutateWorkflow, expected] of [
   ['unknown Action', (yaml) => yaml.replace('actions/checkout@v6', 'evil/action@v1'), 'evil/action'],
   ['floating Action ref', (yaml) => yaml.replace('actions/checkout@v6', 'actions/checkout@main'), 'неподтверждённый ref'],
   ['duplicate publish path', (yaml) => yaml.replace('      - name: Publish with npm Trusted Publishing\n        run: npm publish', '      - name: Duplicate publish\n        run: npm publish\n      - name: Publish with npm Trusted Publishing\n        run: npm publish'), 'несколько publish step'],
-  ['version guard missing', (yaml) => yaml.replace(/      - name: Verify release tag and package versions[\s\S]*?(?=      - uses: actions\/setup-node)/, ''), 'step проверки соответствия'],
+  ['version guard missing', (yaml) => yaml.replace(/      - name: Release guard[\s\S]*?(?=      - uses: actions\/setup-node)/, ''), 'release-guard-contract marker'],
   ['validation job uses ref-looking skip condition', (yaml) => yaml.replace('  adapter-tests:\n', "  adapter-tests:\n    if: contains(github.ref, 'refs/tags/') && false\n"), 'не допускает job-level if'],
   ['required test step skipped', (yaml) => yaml.replace('      - run: npm run test:integration', '      - if: false\n        run: npm run test:integration'), 'requires an unconditional npm run test:integration'],
   ['required build step is continue-on-error', (yaml) => yaml.replace('      - run: npm run build', '      - continue-on-error: true\n        run: npm run build'), 'must not set continue-on-error: true'],
 ]) {
   test(`custom-approved ${label} — FAIL`, () => {
+    const result = runCustomReleaseMutation({ mutateWorkflow });
+    assertExitCode(result, 1, `${label} должен быть отклонён`);
+    assertContains(result.stdout + result.stderr, expected, `Диагностика должна указывать на ${expected}`);
+  });
+}
+
+test('RELEASE_GUARD_SCRIPT содержит fail-closed логику и не принимает комментарии вместо шага — VG-18', () => {
+  const body = RELEASE_GUARD_SCRIPT;
+  assertContains(body, '# release-guard-contract: v1', ' контракт версия v1');
+  assertContains(body, 'exit 1', 'защита завершает release при ошибке');
+  assertContains(body, '::error::', 'формирует GitHub Actions ошибку');
+  assertContains(body, 'npm view', 'проверяет существующую версию в npm');
+  assertContains(body, 'TAG_VERSION', 'извлекает версию из Git tag');
+  assertContains(body, 'PKG_VERSION', 'считывает версию package.json');
+  assertContains(body, 'IO_VERSION', 'считывает версию io-package.json');
+  assertEqual(body.includes('continue-on-error'), false, 'шаг не полагается на continue-on-error');
+});
+
+for (const [label, mutateWorkflow, expected] of [
+  ['guard только в комментарии', (yaml) => yaml.replace(
+    /      - name: Release guard[\s\S]*?(?=      - uses: actions\/setup-node@v6)/,
+    '      - name: Release guard\n        shell: bash\n        run: "# release-guard-contract: v1"\n'
+  ), 'does not match the reviewed'],
+  ['неподдерживаемая версия контракта', (yaml) => yaml.replace('# release-guard-contract: v1', '# release-guard-contract: v2'), 'unsupported release-guard contract version'],
+  ['убрана проверка semver тега', (yaml) => yaml.replace(
+    '          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release tag"; exit 1; }\n',
+    ''
+  ), 'does not match the reviewed'],
+  ['убрано сравнение с package.json', (yaml) => yaml.replace(
+    '          PKG_VERSION="$(node -p "require(\'./package.json\').version")"\n',
+    '          PKG_VERSION="0.0.0"\n'
+  ), 'does not match the reviewed'],
+  ['убрана проверка io-package.json', (yaml) => yaml.replace(
+    '          IO_VERSION="$(node -p "require(\'./io-package.json\').common.version")"\n',
+    '          IO_VERSION="0.0.0"\n'
+  ), 'does not match the reviewed'],
+  ['убрана проверка уже опубликованной версии', (yaml) => yaml.replace(
+    '          NPM_VIEW_OUTPUT="$(npm view "$PACKAGE_NAME@$PKG_VERSION" version 2>&1)"\n',
+    '          NPM_VIEW_OUTPUT="stub"\n'
+  ), 'does not match the reviewed'],
+  ['guard допускает continue-on-error', (yaml) => yaml.replace(
+    '      - name: Release guard\n        shell: bash',
+    '      - name: Release guard\n        shell: bash\n        continue-on-error: true'
+  ), 'continue-on-error: true'],
+  ['guard пропускается через условие', (yaml) => yaml.replace(
+    '      - name: Release guard\n        shell: bash',
+    '      - name: Release guard\n        shell: bash\n        if: startsWith(github.ref, \'refs/tags/v\')'
+  ), 'unconditional'],
+  ['shell отличный от bash', (yaml) => yaml.replace('        shell: bash\n', '        shell: pwsh\n'), 'shell: bash'],
+  ['guard размещён после publish', (yaml) => {
+    const guardMatch = yaml.match(/      - name: Release guard[\s\S]*?(?=      - uses: actions\/setup-node@v6)/);
+    if (!guardMatch) throw new Error('guard block not found');
+    let y = yaml.replace(guardMatch[0], '');
+    y = y.replace(
+      '      - name: Publish with npm Trusted Publishing\n        run: npm publish',
+      '      - name: Publish with npm Trusted Publishing\n        run: npm publish\n' + guardMatch[0]
+    );
+    return y;
+  }, 'must run before the publish step'],
+  ['другой publish job', (yaml) => yaml.replace(
+    'jobs:',
+    'jobs:\n  alt-publish:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm publish\n'
+  ), 'непредусмотренный publish/release step'],
+]) {
+  test(`custom-approved ${label} — VG FAIL`, () => {
     const result = runCustomReleaseMutation({ mutateWorkflow });
     assertExitCode(result, 1, `${label} должен быть отклонён`);
     assertContains(result.stdout + result.stderr, expected, `Диагностика должна указывать на ${expected}`);
@@ -913,6 +978,54 @@ test('custom-approved version mismatch между package и io-package — FAIL
   assertExitCode(result, 1, 'Несовпадающая версия пакета должна быть отклонена');
   assertContains(result.stdout + result.stderr, 'Version mismatch', 'Диагностика должна указывать на version mismatch');
 });
+
+for (const [label, mutateWorkflow, expected] of [
+  ['read-all', (yaml) => yaml.replace('permissions:\n  contents: read\n', 'permissions: read-all\n'), 'read-all'],
+  ['write-all', (yaml) => yaml.replace('permissions:\n  contents: read\n', 'permissions: write-all\n'), 'write-all'],
+  ['неизвестный ключ permissions', (yaml) => yaml.replace(
+    '      contents: write\n      id-token: write\n',
+    '      contents: write\n      id-token: write\n      foobar: read\n'
+  ), 'неизвестное permission'],
+  ['недопустимое значение permissions', (yaml) => yaml.replace(
+    '      contents: write\n      id-token: write\n',
+    '      contents: execute\n      id-token: write\n'
+  ), 'недопустимое значение'],
+  ['некорректная структура permissions', (yaml) => yaml.replace('permissions:\n  contents: read\n', 'permissions: contents\n'), 'permissions должна быть явным mapping'],
+  ['избыточный write на уровне workflow', (yaml) => yaml.replace('permissions:\n  contents: read\n', 'permissions:\n  contents: write\n'), 'разрешён только на уровне job'],
+  ['id-token: write на уровне workflow', (yaml) => yaml.replace('permissions:\n  contents: read\n', 'permissions:\n  contents: read\n  id-token: write\n'), 'разрешён только на уровне job'],
+  ['job permissions нарушают policy', (yaml) => yaml.replace(
+    '      contents: write\n      id-token: write\n',
+    '      contents: write\n      id-token: write\n      packages: write\n'
+  ), 'избыточное permission'],
+  ['отсутствие explicit permissions', (yaml) => yaml.replace('permissions:\n  contents: read\n', ''), 'должны быть заданы явно'],
+]) {
+  test(`custom-approved permissions ${label} — PERM FAIL`, () => {
+    const result = runCustomReleaseMutation({ mutateWorkflow });
+    assertExitCode(result, 1, `${label} должен быть отклонён`);
+    assertContains(result.stdout + result.stderr, expected, `Диагностика должна указывать на ${expected}`);
+  });
+}
+
+for (const [label, mutateWorkflow, expected] of [
+  ['нет setup-node', (yaml) => yaml.replace(
+    /      - uses: actions\/setup-node@v6\n        with:\n          node-version: '24'\n          registry-url: 'https:\/\/registry\.npmjs\.org'\n          package-manager-cache: false\n/,
+    ''
+  ), 'exactly one actions/setup-node step'],
+  ['два setup-node', (yaml) => yaml.replace(
+    '          package-manager-cache: false\n',
+    '          package-manager-cache: false\n      - uses: actions/setup-node@v6\n        with:\n          node-version: \'24\'\n          registry-url: \'https://registry.npmjs.org\'\n          package-manager-cache: false\n'
+  ), 'found 2'],
+  ['package-manager-cache: true', (yaml) => yaml.replace('package-manager-cache: false', 'package-manager-cache: true'), 'package-manager-cache: false'],
+  ['package-manager-cache отсутствует', (yaml) => yaml.replace('          package-manager-cache: false\n', ''), 'package-manager-cache: false'],
+  ['динамическое package-manager-cache', (yaml) => yaml.replace('package-manager-cache: false', 'package-manager-cache: ${{ vars.cache }}'), 'package-manager-cache: false'],
+  ['cache через другой механизм', (yaml) => yaml.replace('package-manager-cache: false\n', "package-manager-cache: false\n          cache: 'npm'\n"), 'must not enable dependency cache'],
+]) {
+  test(`custom-approved setup-node ${label} — NODE FAIL`, () => {
+    const result = runCustomReleaseMutation({ mutateWorkflow });
+    assertExitCode(result, 1, `${label} должен быть отклонён`);
+    assertContains(result.stdout + result.stderr, expected, `Диагностика должна указывать на ${expected}`);
+  });
+}
 
 for (const [label, nodeVersion, npmCommand, expected] of [
   ['Node 22.0.0', '22.0.0', 'npm install -g npm@11.5.1', '>=22.14.0'],
@@ -1016,16 +1129,28 @@ test('custom-approved не расширяет allowlist и не влияет н�
   }
 });
 
+function releaseGuardStepYaml() {
+  return [
+    '      - name: Release guard',
+    '        shell: bash',
+    '        run: |',
+    ...RELEASE_GUARD_SCRIPT.split('\n').map((line) => `          ${line}`),
+  ].join('\n');
+}
+
 function adaptStandardToCustom(workflow) {
   let adapted = workflow
     .replace("      - 'v[0-9]+.[0-9]+.[0-9]+'\n      - 'v[0-9]+.[0-9]+.[0-9]+-*'", "      - 'v*'")
-    .replace('    branches: [main, master]\n', '')
-    .replace('          TAG_VERSION="${GITHUB_REF_NAME#v}"\n', '          TAG_VERSION="${GITHUB_REF_NAME#v}"\n          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release tag"; exit 1; }\n');
+    .replace('    branches: [main, master]\n', '');
   const marker = '\n  deploy:\n';
   const at = adapted.indexOf(marker);
   if (at < 0) throw new Error('deploy job not found in standard fixture');
   const head = adapted.slice(0, at + marker.length);
   let deploy = adapted.slice(at + marker.length);
+  deploy = deploy.replace(
+    / {6}- name: Verify tag matches package and io-package versions\n[\s\S]*?\n {10}fi\n/,
+    `${releaseGuardStepYaml()}\n`,
+  );
   deploy = deploy.replace(
     "      - name: Setup Node.js\n        uses: actions/setup-node@v6\n        with:\n          node-version: '22.x'\n          registry-url: 'https://registry.npmjs.org'\n",
     "      - name: Setup Node.js\n        uses: actions/setup-node@v6\n        with:\n          node-version: '22.14.0'\n          registry-url: 'https://registry.npmjs.org'\n          package-manager-cache: false\n",
@@ -1034,15 +1159,6 @@ function adaptStandardToCustom(workflow) {
     '      - name: Publish prerelease or stable release\n        uses: ioBroker/testing-action-deploy@v1\n        with:\n          node-version: "22.x"\n          github-token: ${{ secrets.GITHUB_TOKEN }}\n          package-cache: \'false\'\n          # npm-token НЕ указывается при Trusted Publishing',
     [
       '      - run: npm install -g npm@11.5.1',
-      '      - name: Check duplicate version',
-      '        shell: bash',
-      '        run: |',
-      '          set -euo pipefail',
-      '          PACKAGE_VERSION="$(node -p "require(\'./package.json\').version")"',
-      '          if npm view "$(node -p "require(\'./package.json\').name")@$PACKAGE_VERSION" version >/dev/null 2>&1; then',
-      '            echo "::error::Package version already exists"',
-      '            exit 1',
-      '          fi',
       '      - name: Publish with OIDC',
       '        run: npm publish',
       '      - name: Create GitHub Release',

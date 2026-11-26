@@ -62,7 +62,7 @@ npm run release patch -- --dry
 4. Разрешённый trigger glob GitHub — только `v*` (это glob, не regex). Deploy обязан fail-closed проверить полное имя `vX.Y.Z` с допустимым prerelease suffix, сравнить его с `package.json` и `io-package.json`, и публиковать только при совпадении. Убедись, что тег указывает на проверенный commit; создай и запушь tag, без branch-triggered publication.
 5. GitHub Actions должны выполнить lint/build, adapter/package tests и другие проектные checks. Обязательные validation jobs и их ключевые steps — unconditional (без `if` и `continue-on-error`); Deploy зависит от всех таких jobs и использует условие ровно `startsWith(github.ref, 'refs/tags/v')`; skipped/failed prerequisite блокирует публикацию.
 6. Publish выполняется одним разрешённым механизмом: прямой `npm publish` с OIDC, numeric pin npm CLI `>= 11.5.1`, Node.js `>= 22.14.0` и явной защитой от уже опубликованной версии. `actions/setup-node` для публикации обязан задавать `registry-url: https://registry.npmjs.org` и `package-manager-cache: false`. `ioBroker/testing-action-deploy@v1` допускается только при явном numeric `npm-version >= 11.5.1` и `package-cache: 'false'`. GitHub Actions Trusted Publishing автоматически создаёт provenance, флаг `--provenance` не нужен. Не добавляй второй publish path.
-7. npm Trusted Publisher должен быть предварительно настроен владельцем пакета на npmjs.com: GitHub Actions, точные owner/organization, repository и имя workflow file (только filename, с `.yml`/`.yaml`); environment укажи только если workflow реально его использует. Workflow использует GitHub-hosted runner и имеет `id-token: write` только на deploy job. `contents: write` требуется только для GitHub Release.
+7. npm Trusted Publisher должен быть предварительно настроен владельцем пакета на npmjs.com: GitHub Actions, точные owner/organization, repository и имя workflow file (только filename, с `.yml`/`.yaml`); environment укажи только если workflow реально его использует. Workflow использует GitHub-hosted runner и имеет `id-token: write` только на deploy job. `contents: write` требуется только для GitHub Release. Permissions должны быть заданы явно (workflow-level mapping); `read-all` и `write-all` запрещены, а `id-token: write` и `contents: write` на уровне workflow не допускаются — они разрешены только в job `deploy`. Остальные jobs используют минимальные права (обычно `contents: read`).
 8. После успеха проверь версию через `npm view <package>@<version> version`, provenance (если доступно), GitHub Release/tag и release notes. Проверь, что опубликованная версия появилась в npm до включения её в news и финального repochecker.
 9. При ошибке до публикации исправь workflow/commit и создай новый тег с новой версией только если изменился пакет. После успешной публикации ту же версию повторно не публикуй: npm отвергает повторное создание уже опубликованной версии; восстановление выполняй новым patch-релизом. Не переписывай и не перемещай уже опубликованный тег.
 
@@ -90,6 +90,32 @@ Trusted Publishing не зависит от release-script, но требует 
 В `test-and-release.yml` НЕ указывай `npm-token`. Минимальный publish-фрагмент для `custom-approved`:
 
 ```yaml
+- name: Release guard
+  shell: bash
+  run: |
+    set -euo pipefail
+    # release-guard-contract: v1
+    TAG_VERSION="${GITHUB_REF_NAME#v}"
+    [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release tag"; exit 1; }
+    PKG_VERSION="$(node -p "require('./package.json').version")"
+    IO_VERSION="$(node -p "require('./io-package.json').common.version")"
+    if [ "$TAG_VERSION" != "$PKG_VERSION" ] || [ "$TAG_VERSION" != "$IO_VERSION" ]; then
+      echo "::error::Release versions do not match"
+      exit 1
+    fi
+    PACKAGE_NAME="$(node -p "require('./package.json').name")"
+    set +e
+    NPM_VIEW_OUTPUT="$(npm view "$PACKAGE_NAME@$PKG_VERSION" version 2>&1)"
+    NPM_VIEW_STATUS=$?
+    set -e
+    if [ "$NPM_VIEW_STATUS" -eq 0 ]; then
+      echo "::error::Package version already exists"
+      exit 1
+    fi
+    if ! printf '%s' "$NPM_VIEW_OUTPUT" | grep -Eq 'E404|404 Not Found|is not in (this|the) npm registry|No match found for version'; then
+      echo "::error::Unable to verify npm publication state: $NPM_VIEW_OUTPUT"
+      exit 1
+    fi
 - uses: actions/setup-node@v6
   with:
     node-version: '24'
@@ -98,6 +124,8 @@ Trusted Publishing не зависит от release-script, но требует 
 - run: npm install --global npm@11.5.1
 - run: npm publish
 ```
+
+Валидатор принимает только этот проверенный скрипт версии с заголовком `release-guard-contract: v1`; любое отклонение (другие поля, оболочка, `if`, `continue-on-error`, комментарий вместо шага) отклоняется.
 
 Если используешь `ioBroker/testing-action-deploy@v1`, обязательно задай numeric `npm-version: "11.5.1"` (или выше), статический `node-version` не ниже `22.14.0` и `package-cache: 'false'`; без `npm-version` action ставит floating npm@11 и не проходит custom-approved.
 
