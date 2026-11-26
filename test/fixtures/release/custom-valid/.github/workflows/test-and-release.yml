@@ -59,11 +59,32 @@ jobs:
           esac
           TAG_NOPREFIX="${TAG_RAW#v}"
           TAG_VERSION=$(node -e '
-            const semver = require("semver");
+            // Pure SemVer 2.0.0 validation without external dependencies
             const v = process.argv[1];
-            const p = semver.parse(v);
-            if (!p) process.exit(1);
-            console.log(p.version);
+
+            // Regex for SemVer 2.0.0
+            // Based on https://semver.org/#is-there-a-suggested-regular-expression-regex-to-check-a-semver-string
+            const semverRegex = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+
+            const match = v.match(semverRegex);
+            if (!match) {
+              process.exit(1);
+            }
+
+            // Additional validation: no leading zeros in numeric prerelease identifiers
+            if (match[1]) {
+              const prereleaseParts = match[1].split(".");
+              for (const part of prereleaseParts) {
+                if (/^\d+$/.test(part) && part.length > 1 && part.startsWith("0")) {
+                  process.exit(1);
+                }
+              }
+            }
+
+            // Build metadata can have leading zeros, no additional validation needed
+
+            // Return version without build metadata for comparison with package.json
+            console.log(v.replace(/\+.*$/, ""));
           ' "$TAG_NOPREFIX") || { echo "::error::Invalid release tag"; exit 1; }
           PKG_VERSION="$(node -p "require('./package.json').version")"
           IO_VERSION="$(node -p "require('./io-package.json').common.version")"
