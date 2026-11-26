@@ -1523,6 +1523,331 @@ test('56. run-adapter-checks.sh использует строгий --mode=new',
   assertContains(source, '--mode=new', 'Предрелизная проверка нового адаптера должна быть строгой');
 });
 
+console.log('\n=== Runtime тесты release guard (R-01) ===\n');
+
+function createMockNpm(tempDir, scenario) {
+  const mockDir = path.join(tempDir, 'mock-bin');
+  fs.mkdirSync(mockDir, { recursive: true });
+  const mockPath = path.join(mockDir, 'npm');
+
+  const script = `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+
+const args = process.argv.slice(2);
+const scenario = '${scenario}';
+
+if (args[0] !== 'view' || !args[1]) {
+  console.error('Unexpected npm arguments:', args.join(' '));
+  process.exit(2);
+}
+
+const pkgSpec = args[1];
+const [pkgName, pkgVersion] = pkgSpec.split('@');
+
+if (scenario === 'not-found') {
+  // Simulate 404 - package version not found
+  console.error('npm ERR! code E404');
+  console.error('npm ERR! 404 Not Found - GET https://registry.npmjs.org/' + pkgName + '/' + pkgVersion + ' - Not found');
+  console.error('npm ERR! 404');
+  console.error('npm ERR! 404  ' + pkgName + '@' + pkgVersion + ' is not in this npm registry.');
+  console.error('npm ERR! 404 Your package name is not valid.');
+  console.error('npm ERR! 404 ');
+  console.error('npm ERR! 404 Note that you can also install from a');
+  console.error('npm ERR! 404 tarball, folder, http url, or git url.');
+  process.exit(1);
+} else if (scenario === 'exists') {
+  // Simulate version already exists
+  console.log(pkgVersion);
+  process.exit(0);
+} else if (scenario === 'network-error') {
+  // Simulate network error
+  console.error('npm ERR! code ENOTFOUND');
+  console.error('npm ERR! syscall getaddrinfo');
+  console.error('npm ERR! errno ENOTFOUND');
+  console.error('npm ERR! network request to https://registry.npmjs.org failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org');
+  process.exit(1);
+} else if (scenario === 'unexpected-args') {
+  console.error('Unexpected arguments to npm view');
+  process.exit(2);
+} else {
+  console.error('Unknown scenario:', scenario);
+  process.exit(2);
+}
+`;
+
+  fs.writeFileSync(mockPath, script);
+  fs.chmodSync(mockPath, 0o755);
+  return mockDir;
+}
+
+function runReleaseGuard(tempDir, env = {}) {
+  const guardScriptPath = path.join(tempDir, 'release-guard.sh');
+  fs.writeFileSync(guardScriptPath, RELEASE_GUARD_SCRIPT);
+  fs.chmodSync(guardScriptPath, 0o755);
+
+  const result = spawnSync('bash', [guardScriptPath], {
+    cwd: tempDir,
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+    timeout: 30000
+  });
+
+  return {
+    code: result.status ?? 1,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? ''
+  };
+}
+
+function setupFixture(tempDir, overrides = {}) {
+  const pkg = {
+    name: 'iobroker.test-adapter',
+    version: '1.0.0',
+    ...overrides.package
+  };
+  const ioPkg = {
+    common: {
+      name: 'test-adapter',
+      version: '1.0.0',
+      titleLang: { en: 'Test Adapter', de: 'Test Adapter' },
+      desc: { en: 'Test', de: 'Test' },
+      news: { '1.0.0': { en: 'Initial release', de: 'Erste Veröffentlichung' } },
+      ...overrides.ioPackage
+    }
+  };
+
+  fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify(pkg, null, 2));
+  fs.writeFileSync(path.join(tempDir, 'io-package.json'), JSON.stringify(ioPkg, null, 2));
+
+  return { pkg, ioPkg };
+}
+
+test('RT-01: Tag SemVer корректен, версии совпадают, npm version отсутствует — Guard PASS', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt01-'));
+  try {
+    setupFixture(tempDir);
+    const mockBin = createMockNpm(tempDir, 'not-found');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(result.code, 0, 'Guard должен завершиться успешно (exit 0)');
+    assertNotContains(result.stderr, '::error::', 'Не должно быть ошибок');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-02: Tag содержит некорректный SemVer — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt02-'));
+  try {
+    setupFixture(tempDir);
+    const mockBin = createMockNpm(tempDir, 'not-found');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0' });
+    assertEqual(result.code, 1, 'Guard должен завершиться с ошибкой (exit 1)');
+    assertContains(result.stdout, '::error::Invalid release tag', 'Должна быть ошибка некорректного тега');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-03: Tag и package.json version не совпадают — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt03-'));
+  try {
+    setupFixture(tempDir, { package: { version: '2.0.0' } });
+    const mockBin = createMockNpm(tempDir, 'not-found');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(result.code, 1, 'Guard должен завершиться с ошибкой (exit 1)');
+    assertContains(result.stdout, '::error::Release versions do not match', 'Должна быть ошибка несовпадения версий');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-04: package.json и io-package.json version не совпадают — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt04-'));
+  try {
+    setupFixture(tempDir, { ioPackage: { version: '2.0.0' } });
+    const mockBin = createMockNpm(tempDir, 'not-found');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(result.code, 1, 'Guard должен завершиться с ошибкой (exit 1)');
+    assertContains(result.stdout, '::error::Release versions do not match', 'Должна быть ошибка несовпадения версий');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-05: npm сообщает, что версия уже опубликована — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt05-'));
+  try {
+    setupFixture(tempDir);
+    const mockBin = createMockNpm(tempDir, 'exists');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(result.code, 1, 'Guard должен завершиться с ошибкой (exit 1)');
+    assertContains(result.stdout, '::error::Package version already exists', 'Должна быть ошибка уже опубликованной версии');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-06: npm registry/network error — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt06-'));
+  try {
+    setupFixture(tempDir);
+    const mockBin = createMockNpm(tempDir, 'network-error');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(result.code, 1, 'Guard должен завершиться с ошибкой (exit 1)');
+    assertContains(result.stdout, '::error::Unable to verify npm publication state', 'Должна быть ошибка неопределенного состояния npm');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-07: npm mock получает неожиданные аргументы — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt07-'));
+  try {
+    setupFixture(tempDir);
+    const mockBin = createMockNpm(tempDir, 'unexpected-args');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(result.code, 1, 'Guard должен завершиться с ошибкой (exit 1)');
+    assertContains(result.stdout, '::error::Unable to verify npm publication state', 'Должна быть ошибка неопределенного состояния npm');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-08: Отсутствует обязательная environment variable GITHUB_REF_NAME — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt08-'));
+  try {
+    setupFixture(tempDir);
+    const mockBin = createMockNpm(tempDir, 'not-found');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH });
+    assertEqual(result.code, 1, 'Guard должен завершиться с ошибкой (exit 1)');
+    // set -u causes "unbound variable" error before tag validation - both are acceptable failures
+    const hasExpectedError = result.stdout.includes('::error::Invalid release tag') ||
+                             result.stderr.includes('unbound variable') ||
+                             result.stdout.includes('unbound variable');
+    assertEqual(hasExpectedError, true, 'Должна быть ошибка отсутствующей переменной');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-09: Tag пустой — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt09-'));
+  try {
+    setupFixture(tempDir);
+    const mockBin = createMockNpm(tempDir, 'not-found');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: '' });
+    assertEqual(result.code, 1, 'Guard должен завершиться с ошибкой (exit 1)');
+    assertContains(result.stdout, '::error::Invalid release tag', 'Должна быть ошибка пустого тега');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-10: Версия package.json отсутствует или некорректна — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt10-'));
+  try {
+    const pkg = { name: 'iobroker.test-adapter', version: '' };
+    const ioPkg = { common: { name: 'test-adapter', version: '1.0.0', titleLang: { en: 'Test', de: 'Test' }, desc: { en: 'Test', de: 'Test' }, news: { '1.0.0': { en: 'Initial', de: 'Init' } } } };
+    fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify(pkg, null, 2));
+    fs.writeFileSync(path.join(tempDir, 'io-package.json'), JSON.stringify(ioPkg, null, 2));
+    const mockBin = createMockNpm(tempDir, 'not-found');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(result.code, 1, 'Guard должен завершиться с ошибкой (exit 1)');
+    assertContains(result.stdout, '::error::Release versions do not match', 'Должна быть ошибка несовпадения версий');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-11: Версия io-package.json отсутствует или некорректна — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt11-'));
+  try {
+    const pkg = { name: 'iobroker.test-adapter', version: '1.0.0' };
+    const ioPkg = { common: { name: 'test-adapter', version: '', titleLang: { en: 'Test', de: 'Test' }, desc: { en: 'Test', de: 'Test' }, news: { '1.0.0': { en: 'Initial', de: 'Init' } } } };
+    fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify(pkg, null, 2));
+    fs.writeFileSync(path.join(tempDir, 'io-package.json'), JSON.stringify(ioPkg, null, 2));
+    const mockBin = createMockNpm(tempDir, 'not-found');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(result.code, 1, 'Guard должен завершиться с ошибкой (exit 1)');
+    assertContains(result.stdout, '::error::Release versions do not match', 'Должна быть ошибка несовпадения версий');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-12: Guard возвращает non-zero exit code при любой ошибке проверки — Guard FAIL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt12-'));
+  try {
+    setupFixture(tempDir);
+    const mockBin = createMockNpm(tempDir, 'exists');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(result.code, 1, 'Guard должен вернуть non-zero exit code');
+    assertNotContains(result.stdout, 'success', 'Не должно быть сообщения об успехе');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-13: Успешный guard не вызывает publish самостоятельно — PASS', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt13-'));
+  try {
+    setupFixture(tempDir);
+    const mockBin = createMockNpm(tempDir, 'not-found');
+    const result = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(result.code, 0, 'Guard должен завершиться успешно');
+    assertNotContains(result.stdout, 'npm publish', 'Guard не должен вызывать npm publish');
+    assertNotContains(result.stdout, 'publish', 'Guard не должен содержать publish');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('RT-14: Failed guard блокирует publish в тестовой orchestration — PASS', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-guard-rt14-'));
+  try {
+    setupFixture(tempDir);
+    const mockBin = createMockNpm(tempDir, 'exists');
+
+    const guardResult = runReleaseGuard(tempDir, { PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    assertEqual(guardResult.code, 1, 'Guard должен упасть');
+
+    let publishCalled = false;
+    const publishScript = `#!/usr/bin/env node
+process.env.GUARD_PASSED = 'false';
+console.log('Publish would run');
+publishCalled = true;
+`;
+    const publishPath = path.join(tempDir, 'publish.sh');
+    fs.writeFileSync(publishPath, publishScript);
+    fs.chmodSync(publishPath, 0o755);
+
+    const orchestrationScript = `#!/usr/bin/env bash
+set -euo pipefail
+./release-guard.sh || exit 1
+./publish.sh
+`;
+    const orchestrationPath = path.join(tempDir, 'orchestrate.sh');
+    fs.writeFileSync(orchestrationPath, orchestrationScript);
+    fs.chmodSync(orchestrationPath, 0o755);
+
+    fs.writeFileSync(path.join(tempDir, 'release-guard.sh'), RELEASE_GUARD_SCRIPT);
+    fs.chmodSync(path.join(tempDir, 'release-guard.sh'), 0o755);
+
+    const result = spawnSync('bash', [orchestrationPath], {
+      cwd: tempDir,
+      env: { ...process.env, PATH: mockBin + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' },
+      encoding: 'utf8',
+      timeout: 30000
+    });
+
+    assertNotContains(result.stdout, 'Publish would run', 'Publish не должен запуститься после упавшего guard');
+    assertEqual(result.status, 1, 'Orchestration должна упасть с кодом 1');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 console.log('\n=== Итог ===');
 console.log(`  Всего: ${testStats.total}`);
 console.log(`  PASS: ${testStats.passed}`);
