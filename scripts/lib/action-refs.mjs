@@ -36,7 +36,7 @@ const OFFICIAL_TEMPLATE_ACTIONS = [
     },
     {
         name: 'ioBroker/testing-action-deploy', job: 'deploy', allowedRefs: ['v1'], inputs: [
-            'node-version', 'install-command', 'package-cache', 'build', 'build-command', 'npm-token', 'tag',
+            'node-version', 'install-command', 'package-cache', 'build', 'build-command', 'npm-token', 'npm-version', 'tag',
             'github-token', 'sentry', 'sentry-token', 'sentry-url', 'sentry-org', 'sentry-project',
             'sentry-version-prefix', 'sentry-github-integration', 'sentry-sourcemap-paths'
         ], requiredInputGroups: [['node-version'], ['github-token']], kind: 'step', tier: 'template',

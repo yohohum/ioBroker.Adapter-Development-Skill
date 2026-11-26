@@ -60,10 +60,22 @@ jobs:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
+      - name: Pin npm CLI for Trusted Publishing
+        run: npm install --global npm@11.5.1
+      - name: Reject an already published version
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if npm view "$(node -p "require('./package.json').name")@$PACKAGE_VERSION" version >/dev/null 2>&1; then
+            echo "::error::Package version already exists"
+            exit 1
+          fi
       - run: npm ci
       - run: npm run build
       - name: Publish with npm Trusted Publishing
-        uses: ioBroker/testing-action-deploy@v1
-        with:
-          node-version: '24'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag

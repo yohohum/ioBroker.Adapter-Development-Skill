@@ -10,6 +10,9 @@
 // refs, local reusable workflows, composite actions, symlinks, duplicate YAML
 // keys and inputs/secrets are checked for both profiles.
 
+import path from 'node:path';
+import semver from 'semver';
+import { readVerifiedText } from './action-refs.mjs';
 import { validateDeployCondition } from './deploy-condition.mjs';
 
 const PUBLISH_COMMAND = /\b(?:npm|pnpm|yarn)\s+(?:publish|stage\s+publish)\b/i;
@@ -36,6 +39,8 @@ const ALLOWED_PERMISSION_KEYS = new Set([
     'statuses',
 ]);
 const TOKEN_VALUE_PATTERN = /NPM_TOKEN|NODE_AUTH_TOKEN|_authToken|npm[_-]?token/i;
+const MIN_NODE = '22.14.0';
+const MIN_NPM = '11.5.1';
 
 function asArray(value) {
     if (value === undefined || value === null) return [];
@@ -64,33 +69,111 @@ function jobText(job) {
     ].join(' ')).join('\n');
 }
 
+function normalizeExpression(condition) {
+    return String(condition ?? '').replace(/^\$\{\{\s*/, '').replace(/\s*\}\}$/, '').trim();
+}
+
+function isDeployConditionFailClosed(condition) {
+    const normalized = normalizeExpression(condition);
+    return normalized === "startsWith(github.ref, 'refs/tags/v')" || normalized === 'startsWith(github.ref, "refs/tags/v")';
+}
+
+export function isStaticNodeRequirement(value) {
+    if (typeof value !== 'string' && typeof value !== 'number') return false;
+    const spec = String(value).trim();
+    if (!spec || /\$\{|\}|\b(?:latest|current|node|lts)\b/i.test(spec)) return false;
+    const range = semver.validRange(spec);
+    const minimum = range === null ? null : semver.minVersion(range);
+    return minimum !== null && semver.gte(minimum, MIN_NODE);
+}
+
+function getNpmPin(command) {
+    const match = String(command).trim().match(/^npm\s+install\s+(?:-g|--global)\s+npm@([0-9]+\.[0-9]+\.[0-9]+)$/i);
+    if (!match || semver.valid(match[1]) === null || !semver.gte(match[1], MIN_NPM)) return null;
+    return match[1];
+}
+
+function isNpmVersionSufficient(value) {
+    if (typeof value !== 'string' && typeof value !== 'number') return false;
+    const version = semver.valid(String(value).trim());
+    return version !== null && semver.gte(version, MIN_NPM);
+}
+
+export function isNpmCliPinSufficient(command) {
+    return getNpmPin(command) !== null;
+}
+
+function resolveNodeVersionFile(root, relative, errors, location) {
+    if (typeof relative !== 'string' || path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) {
+        errors.push(`${location}: node-version-file must be repository-relative and cannot escape the repository.`);
+        return null;
+    }
+    try {
+        const content = readVerifiedText(root, relative).trim();
+        if (relative === 'package.json') return JSON.parse(content).engines?.node ?? null;
+        if (relative === '.tool-versions') {
+            return content.split(/\r?\n/).map((line) => line.trim()).find((line) => /^nodejs\s+/.test(line))?.split(/\s+/)[1] ?? null;
+        }
+        if (['.nvmrc', '.node-version', '.npmrc-node-version'].includes(relative)) {
+            return content.split(/\r?\n/).find((line) => line.trim() && !line.trim().startsWith('#'))?.trim() ?? null;
+        }
+        errors.push(`${location}: node-version-file "${relative}" is unsupported; accepted files are package.json (engines.node), .nvmrc, .node-version, or .tool-versions.`);
+        return null;
+    } catch (error) {
+        errors.push(`${location}: cannot safely resolve node-version-file (${error instanceof Error ? error.message : String(error)}).`);
+        return null;
+    }
+}
+
+function nodeSetupIsCompliant(step, errors, location, root) {
+    const values = step?.with ?? {};
+    if (values['node-version'] !== undefined && values['node-version-file'] !== undefined) {
+        errors.push(`${location}: set only one of node-version and node-version-file.`);
+        return false;
+    }
+    const spec = values['node-version-file'] !== undefined
+        ? resolveNodeVersionFile(root, values['node-version-file'], errors, location)
+        : values['node-version'];
+    if (!isStaticNodeRequirement(spec)) {
+        errors.push(`${location}: resolved Node.js version must have a provable minimum >=${MIN_NODE}; ranges, aliases or dynamic expressions below/unknown to this threshold are rejected.`);
+        return false;
+    }
+    return true;
+}
+
+function hasUnconditionalCommand(job, command) {
+    return (Array.isArray(job?.steps) ? job.steps : []).some((step) =>
+        step?.if === undefined && step?.['continue-on-error'] !== true && typeof step?.run === 'string' && command.test(step.run.trim()));
+}
+
+function jobContainsRequiredStep(job, matcher) {
+    return hasUnconditionalCommand(job, matcher);
+}
+
 function jobHasValidationContent(job) {
-    const text = jobText(job);
-    const strongCommands = /\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|lint|test(?::[A-Za-z0-9_-]+)?)\b/i.test(text);
-    const approvedTestActions = /ioBroker\/testing-action-(?:check|adapter)@(?:v1|v2)\b/i.test(text);
-    return strongCommands || approvedTestActions;
+    return jobHasTestContent(job) || jobHasLintOrBuildContent(job);
 }
 
 function jobHasTestContent(job) {
-    const text = jobText(job);
-    return /\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test(?::[A-Za-z0-9_-]+)?)\b/i.test(text) ||
-        /ioBroker\/testing-action-adapter@v1\b/i.test(text);
+    return hasUnconditionalCommand(job, /^npm (?:test|run test(?::[A-Za-z0-9_-]+)?)$/i) ||
+        hasUnconditionalAction(job, /^ioBroker\/testing-action-adapter@v1$/);
 }
 
 function jobHasLintOrBuildContent(job) {
-    const text = jobText(job);
-    return /\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|lint)\b/i.test(text) ||
-        /ioBroker\/testing-action-check@v2\b/i.test(text);
+    return hasUnconditionalCommand(job, /^npm run (?:build|lint)$/i) ||
+        hasUnconditionalAction(job, /^ioBroker\/testing-action-check@v2$/);
+}
+
+function hasUnconditionalAction(job, actionPattern) {
+    return (Array.isArray(job?.steps) ? job.steps : []).some((step) =>
+        step?.if === undefined && step?.['continue-on-error'] !== true && typeof step?.uses === 'string' && actionPattern.test(step.uses.trim()));
 }
 
 function jobIsTagEligible(job) {
-    if (job?.if === undefined || job?.if === null || String(job.if).trim() === '') return true;
-    const condition = String(job.if);
-    if (/(?:always|failure|cancelled)\s*\(/i.test(condition)) return false;
-    const mentionsTag = /refs\/tags|ref_type\s*==\s*['"]tag|event_name\s*==\s*['"]push/i.test(condition);
-    if (mentionsTag) return true;
-    if (/pull_request|refs\/heads|head_ref|base_ref/i.test(condition)) return false;
-    return false;
+    // Required validation jobs must run unconditionally whenever the workflow
+    // is triggered. GitHub's default success() semantics then gate downstream
+    // jobs; arbitrary expressions are not statically interpreted here.
+    return job?.if === undefined || job?.if === null || String(job.if).trim() === '';
 }
 
 function isVersionConsistencyStep(step) {
@@ -128,9 +211,14 @@ function collectTokenFindings(value, path = 'workflow') {
 }
 
 function normalizePermissions(value, errors, location) {
-    if (value === undefined || value === null) return {};
+    if (value === undefined) return null;
+    if (value === 'read-all') return Object.fromEntries([...ALLOWED_PERMISSION_KEYS].map((permission) => [permission, 'read']));
+    if (value === 'write-all') {
+        errors.push(`${location}: write-all permissions запрещены; явно укажите минимальный permissions mapping.`);
+        return {};
+    }
     if (typeof value !== 'object' || Array.isArray(value)) {
-        errors.push(`${location}: permissions должны быть mapping с явными правами, а не "${String(value)}".`);
+        errors.push(`${location}: permissions должна быть mapping, read-all или write-all; получено "${String(value)}".`);
         return {};
     }
     const result = {};
@@ -151,19 +239,72 @@ function normalizePermissions(value, errors, location) {
     return result;
 }
 
-function effectivePermissions(workflow, job, errors, wfName) {
+export function effectivePermissions(workflow, job, errors = [], wfName = 'workflow') {
     const top = normalizePermissions(workflow.permissions, errors, `${wfName}: permissions`);
-    const jobPermissions = normalizePermissions(job.permissions, errors, `${wfName}: job "deploy" permissions`);
-    const effective = { ...top, ...jobPermissions };
-    if ((top.contents === 'write' || top['id-token'] === 'write') && job.permissions === undefined) errors.push(`${wfName}: write permissions contents/id-token должны быть ограничены deploy job, не workflow-wide.`);
-    return effective;
+    if (job.permissions !== undefined) {
+        // GitHub replaces the workflow-level map for a job-level map; omitted
+        // permissions become none. Never merge these mappings.
+        return normalizePermissions(job.permissions, errors, `${wfName}: job "deploy" permissions`) ?? {};
+    }
+    if (top === null) {
+        errors.push(`${wfName}: невозможно доказать effective GITHUB_TOKEN permissions без явного workflow- или deploy-level permissions.`);
+        return {};
+    }
+    return top;
 }
 
 function hasSetupNodeWithRegistry(job) {
     const steps = Array.isArray(job?.steps) ? job.steps : [];
     return steps.some((step) => step?.uses === 'actions/setup-node@v6' &&
         typeof step?.with?.['registry-url'] === 'string' &&
-        step.with['registry-url'].includes('registry.npmjs.org'));
+        step.with['registry-url'] === 'https://registry.npmjs.org');
+}
+
+function validatePublishRuntimeAndCache(deploySteps, deployActionSteps, errors, wfName, root) {
+    const setupNodeSteps = deploySteps.map((step, index) => ({ step, index }))
+        .filter(({ step }) => step?.uses === 'actions/setup-node@v6');
+    for (const { step, index } of setupNodeSteps) {
+        const setupName = String(step.name ?? '').toLowerCase();
+        if (step.with?.['registry-url'] === 'https://registry.npmjs.org' || setupName.includes('publish') || setupName.includes('npm trusted')) {
+            nodeSetupIsCompliant(step, errors, `${wfName}: job "deploy" step ${index + 1}`, root);
+        }
+    }
+
+    // testing-action-deploy@v1 itself runs setup-node and defaults package-cache
+    // to npm; its explicit supported input must disable its internal cache.
+    for (const { step, index } of deployActionSteps) {
+        if (typeof step.with?.['package-cache'] !== 'string' || step.with['package-cache'].toLowerCase() !== 'false') {
+            errors.push(`${wfName}: job "deploy" step ${index + 1} must set package-cache: 'false' for ioBroker/testing-action-deploy@v1.`);
+        }
+        const nodeVersion = step.with?.['node-version'];
+        if (!isStaticNodeRequirement(nodeVersion)) errors.push(`${wfName}: job "deploy" step ${index + 1} node-version must be static and >=${MIN_NODE}.`);
+    }
+
+    if (setupNodeSteps.length === 0 && deployActionSteps.length === 0) {
+        errors.push(`${wfName}: deploy must use actions/setup-node@v6.`);
+    }
+
+    const npmInstallSteps = deploySteps.map((step, index) => ({ step, index }))
+        .filter(({ step }) => typeof step?.run === 'string' && /\bnpm\s+install\s+(?:-g|--global)\s+npm(?:@[^\s]+)?\b/i.test(step.run));
+    if (deployActionSteps.length === 0 && npmInstallSteps.length === 0 && deploySteps.some((step) => typeof step?.run === 'string' && PUBLISH_COMMAND.test(step.run))) errors.push(`${wfName}: direct npm publish must install a pinned npm CLI version >=${MIN_NPM} before publish.`);
+    let pinnedNpm = false;
+    for (const { step, index } of npmInstallSteps) {
+        const pin = getNpmPin(step.run);
+        if (!pin) {
+            errors.push(`${wfName}: job "deploy" step ${index + 1} must pin npm CLI to a numeric version >=${MIN_NPM}.`);
+        } else pinnedNpm = true;
+    }
+    if (deployActionSteps.length === 0 && npmInstallSteps.length > 0 && !pinnedNpm) {
+        errors.push(`${wfName}: no valid npm CLI pin >=${MIN_NPM} was found in the publish job.`);
+    }
+    if (deployActionSteps.length === 1) {
+        const internalNpmVersion = deployActionSteps[0].step.with?.['npm-version'];
+        if (!isNpmVersionSufficient(internalNpmVersion)) errors.push(`${wfName}: custom-approved rejects ioBroker/testing-action-deploy@v1 unless its npm-version input is numeric and >=${MIN_NPM}.`);
+        if (TOKEN_VALUE_PATTERN.test(JSON.stringify(deployActionSteps[0].step.with ?? {}))) errors.push(`${wfName}: deployment Action must not receive a long-lived npm token.`);
+        if (deployActionSteps[0].step.with?.['npm-token']) errors.push(`${wfName}: npm-token must not be set for Trusted Publishing.`);
+    } else if (!pinnedNpm && deploySteps.some((step) => typeof step?.run === 'string' && PUBLISH_COMMAND.test(step.run))) {
+        errors.push(`${wfName}: direct npm publication must set up npm CLI with a numeric version >=${MIN_NPM} before publish.`);
+    }
 }
 
 function hasGitHubReleaseStep(job) {
@@ -192,7 +333,7 @@ function hasVersionGuardBeforePublish(job, publishIndex) {
     });
 }
 
-export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } = {}) {
+export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow', root = process.cwd() } = {}) {
     const errors = [];
     const warnings = [];
     const reviews = [];
@@ -201,7 +342,7 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } 
         return { errors: [`${wfName}: workflow должен быть mapping.`], warnings, reviews };
     }
 
-    const events = normalizeEvents(workflow.on);
+    const events = normalizeEvents(workflow.on ?? workflow['on']);
     if (!events) {
         errors.push(`${wfName}: отсутствует корректный блок on.`);
         return { errors, warnings, reviews };
@@ -210,6 +351,9 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } 
         if (Object.hasOwn(events, event)) {
             errors.push(`${wfName}: событие "${event}" не допускается в профиле custom-approved. Публикация должна запускаться по push релизного тега.`);
         }
+    }
+    for (const event of Object.keys(events)) {
+        if (!['push', 'pull_request'].includes(event)) errors.push(`${wfName}: unsupported trigger event "${event}" in custom-approved.`);
     }
     if (!Object.hasOwn(events, 'push')) {
         errors.push(`${wfName}: отсутствует событие push с фильтром релизных тегов.`);
@@ -274,6 +418,14 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } 
     }
 
     const needs = asArray(deploy.needs);
+    if (deploy.needs === undefined || needs.length === 0) errors.push(`${wfName}: deploy requires explicit needs for all validation jobs.`);
+    for (const dependency of needs) {
+        if (!Object.hasOwn(jobs, dependency)) errors.push(`${wfName}: deploy depends on missing job "${dependency}".`);
+        const dependencyJob = jobs[dependency];
+        if (dependencyJob?.if !== undefined && dependencyJob?.if !== null && String(dependencyJob.if).trim() !== '') {
+            errors.push(`${wfName}: deploy prerequisite job "${dependency}" may be skipped by an if condition.`);
+        }
+    }
     for (const name of validationJobNames) {
         if (!needs.includes(name)) {
             errors.push(`${wfName}: job "deploy" не зависит от обязательного job "${name}". Публикация не должна выполняться при пропущенных или упавших проверках.`);
@@ -298,18 +450,35 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } 
             errors.push(`${wfName}: job "${name}" не содержит распознаваемых build/lint/test проверок.`);
         }
         if (!jobIsTagEligible(job)) {
-            errors.push(`${wfName}: job "${name}" имеет условие, которое может пропустить обязательную проверку при релизном теге: ${String(job.if)}.`);
+            errors.push(`${wfName}: обязательный validation job "${name}" не допускает job-level if; его выполнение должно гарантироваться при каждом workflow trigger, включая release tag.`);
+        }
+        if (job.if !== undefined && job.if !== null && String(job.if).trim() !== '') {
+            errors.push(`${wfName}: обязательный validation job "${name}" имеет unsupported condition; conditions допускаются только отсутствующие (unconditional).`);
         }
     }
 
     const testJobs = validationJobNames.filter((name) => jobHasTestContent(jobs[name]));
     const lintBuildJobs = validationJobNames.filter((name) => jobHasLintOrBuildContent(jobs[name]));
     if (testJobs.length === 0) {
-        errors.push(`${wfName}: не найден job с обязательными тестами (npm test / test:package / test:integration или ioBroker/testing-action-adapter).`);
+        errors.push(`${wfName}: missing unconditional required tests (npm test/npm run test:*); validation checks must be real unconditional commands.`);
     }
     if (lintBuildJobs.length === 0) {
-        errors.push(`${wfName}: не найден job с обязательными build/lint проверками (npm run build / npm run lint или ioBroker/testing-action-check).`);
+        errors.push(`${wfName}: missing unconditional required build/lint checks (npm run build/lint).`);
     }
+    for (const name of validationJobNames) {
+        const job = jobs[name];
+        for (const [index, step] of (Array.isArray(job?.steps) ? job.steps : []).entries()) {
+            const command = typeof step?.run === 'string' ? step.run.trim() : '';
+            const requiredCheck = /^(?:npm\s+(?:test|run\s+(?:test(?::[A-Za-z0-9_-]+)?|build|lint)))(?:\s+.*)?$/i.test(command);
+            if (!requiredCheck) continue;
+            if (step.if !== undefined && step.if !== null && String(step.if).trim() !== '') {
+                errors.push(`${wfName}: required check step ${name}/${index + 1} must not have an if condition.`);
+            }
+            if (step['continue-on-error'] === true) errors.push(`${wfName}: required check step ${name}/${index + 1} must not set continue-on-error: true.`);
+        }
+    }
+    const skippedJobs = validationJobNames.filter((name) => !jobIsTagEligible(jobs[name]));
+    for (const name of skippedJobs) errors.push(`${wfName}: validation job "${name}" may be skipped or conditionally omitted; only unconditional validation jobs are supported.`);
     const requiredGateNames = ['check-and-lint', 'adapter-tests'];
     for (const requiredName of requiredGateNames) {
         if (!Object.hasOwn(jobs, requiredName)) errors.push(`${wfName}: отсутствует обязательный release validation job "${requiredName}".`);
@@ -317,6 +486,18 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } 
     const requiredGatePaths = validationJobNames.filter((name) => requiredGateNames.includes(name));
     if (requiredGatePaths.length === requiredGateNames.length && requiredGatePaths.some((name) => !needs.includes(name))) {
         errors.push(`${wfName}: deploy needs должны включать обе обязательные группы проверки: check-and-lint и adapter-tests.`);
+    }
+    if (jobs['check-and-lint'] && !jobContainsRequiredStep(jobs['check-and-lint'], /^npm run (?:build|lint)$/i) && !hasUnconditionalAction(jobs['check-and-lint'], /^ioBroker\/testing-action-check@v2$/)) {
+        errors.push(`${wfName}: check-and-lint requires an unconditional npm run build/lint step; conditions or continue-on-error are unsupported.`);
+    }
+    if (jobs['check-and-lint'] && !jobContainsRequiredStep(jobs['check-and-lint'], /^npm run test:package$/i) && !hasUnconditionalAction(jobs['check-and-lint'], /^ioBroker\/testing-action-check@v2$/)) {
+        errors.push(`${wfName}: check-and-lint requires an unconditional npm run test:package step.`);
+    }
+    if (jobs['adapter-tests'] && !jobContainsRequiredStep(jobs['adapter-tests'], /^npm run test:integration$/i) && !hasUnconditionalAction(jobs['adapter-tests'], /^ioBroker\/testing-action-adapter@v1$/)) {
+        errors.push(`${wfName}: adapter-tests requires an unconditional npm run test:integration step.`);
+    }
+    if (!jobs['adapter-tests'] || (!jobContainsRequiredStep(jobs['adapter-tests'], /^npm run test:integration$/i) && !hasUnconditionalAction(jobs['adapter-tests'], /^ioBroker\/testing-action-adapter@v1$/))) {
+        errors.push(`${wfName}: required adapter tests are missing or conditional.`);
     }
 
     if (deploy['continue-on-error'] === true) {
@@ -336,22 +517,27 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } 
     for (const [name, job] of Object.entries(jobs)) {
         if (name === 'deploy') continue;
         const local = normalizePermissions(job?.permissions, errors, `${wfName}: job "${name}" permissions`);
-        if (local['id-token'] === 'write' || local.contents === 'write' || local.packages === 'write') {
+        if (local?.['id-token'] === 'write' || local?.contents === 'write' || local?.packages === 'write') {
             errors.push(`${wfName}: validation job "${name}" не должен иметь write permissions.`);
         }
     }
 
     const conditionResult = validateDeployCondition(deploy.if);
-    errors.push(...conditionResult.errors);
-    reviews.push(...conditionResult.reviews);
-
-    const tokenFindings = collectTokenFindings(workflow);
-    errors.push(...tokenFindings);
+    if (!isDeployConditionFailClosed(deploy.if)) {
+        errors.push(`${wfName}: deploy.if must be exactly startsWith(github.ref, 'refs/tags/v'); all other expressions are rejected.`);
+    }
 
     const allPublishSteps = [];
     for (const [name, job] of Object.entries(jobs)) {
         for (const publishStep of findPublishSteps(job)) {
             allPublishSteps.push({ jobName: name, ...publishStep });
+        }
+    }
+    for (const [name, job] of Object.entries(jobs)) {
+        for (const [index, step] of (Array.isArray(job?.steps) ? job.steps : []).entries()) {
+            const command = typeof step?.run === 'string' ? step.run : '';
+            const actionToken = JSON.stringify(step?.with ?? {}) + JSON.stringify(step?.env ?? {});
+            if (TOKEN_VALUE_PATTERN.test(command + actionToken)) errors.push(`${wfName}: npm token reference is prohibited in ${name} step ${index + 1}.`);
         }
     }
     const nonDeployPublish = allPublishSteps.filter(({ jobName }) => jobName !== 'deploy');
@@ -363,6 +549,8 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } 
     const deployActionSteps = (Array.isArray(deploy.steps) ? deploy.steps : [])
         .map((step, index) => ({ step, index }))
         .filter(({ step }) => step?.uses === 'ioBroker/testing-action-deploy@v1');
+    const tokenFindings = collectTokenFindings(workflow);
+    errors.push(...tokenFindings);
     for (const [name, job] of Object.entries(jobs)) {
         if (name === 'deploy') continue;
         for (const [index, step] of (Array.isArray(job?.steps) ? job.steps : []).entries()) {
@@ -382,6 +570,12 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } 
     }
 
     const deploySteps = Array.isArray(deploy.steps) ? deploy.steps : [];
+    for (const { step, index } of deploySteps.map((step, index) => ({ step, index }))) {
+        if (typeof step?.run === 'string' && PUBLISH_COMMAND.test(step.run) && (TOKEN_VALUE_PATTERN.test(step.run) || TOKEN_VALUE_PATTERN.test(JSON.stringify(step.env ?? {})))) {
+            errors.push(`${wfName}: npm token references are prohibited in publish step ${index + 1}.`);
+        }
+    }
+    validatePublishRuntimeAndCache(deploySteps, deployActionSteps, errors, wfName, root);
     const versionCheckSteps = deploySteps
         .map((step, index) => ({ step, index }))
         .filter(({ step }) => isVersionConsistencyStep(step));
@@ -441,9 +635,8 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } 
         if (TOKEN_VALUE_PATTERN.test(run)) {
             errors.push(`${wfName}: npm publish не должен ссылаться на npm token; используйте OIDC.`);
         }
-        if (!hasSetupNodeWithRegistry(deploy)) {
-            errors.push(`${wfName}: для ручного npm publish требуется actions/setup-node@v6 с registry-url: https://registry.npmjs.org.`);
-        }
+        const registrySetupIndex = deploySteps.findIndex((candidate) => candidate?.uses === 'actions/setup-node@v6' && candidate?.with?.['registry-url'] === 'https://registry.npmjs.org');
+        if (registrySetupIndex < 0 || registrySetupIndex > index) errors.push(`${wfName}: setup-node@v6 with registry-url https://registry.npmjs.org must precede publish.`);
         if (!hasVersionGuardBeforePublish(deploy, index)) {
             errors.push(`${wfName}: перед ручным npm publish требуется fail-closed проверка отсутствия уже опубликованной версии (npm view + exit 1).`);
         }
@@ -454,16 +647,15 @@ export function validateCustomReleaseWorkflow(workflow, { wfName = 'workflow' } 
             errors.push(`${wfName}: проверка версии должна выполняться до publish step.`);
         }
         const publishWith = step.with ?? {};
-        const publishEnv = step.env ?? {};
-        if (publishWith['access'] === 'public' || publishWith['provenance'] === false) {
-            errors.push(`${wfName}: npm publish inputs не должны изменять public/provenance defaults bypass-значениями.`);
+        if (publishWith['access'] === 'public' || publishWith['provenance'] === false) errors.push(`${wfName}: npm publish must not disable provenance.`);
+        const registrySetups = deploySteps.map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+            .filter(({ candidate }) => candidate?.uses === 'actions/setup-node@v6' && candidate?.with?.['registry-url'] === 'https://registry.npmjs.org');
+        for (const { candidate, candidateIndex } of registrySetups) {
+            nodeSetupIsCompliant(candidate, errors, `${wfName}: job "deploy" step ${candidateIndex + 1}`, root);
         }
-        const setupNodeIndex = deploySteps.findIndex((candidate) => candidate?.uses === 'actions/setup-node@v6' && candidate?.with?.['registry-url'] === 'https://registry.npmjs.org');
-        if (setupNodeIndex < 0 || setupNodeIndex > index) errors.push(`${wfName}: setup-node registry config должен быть до npm publish.`);
-        const nodeVersions = deploySteps.filter((candidate) => candidate?.uses === 'actions/setup-node@v6').map((candidate) => candidate?.with?.['node-version']).filter(Boolean);
-        if (!nodeVersions.some((version) => Number.parseInt(String(version), 10) >= 22)) errors.push(`${wfName}: npm Trusted Publishing требует Node.js >=22.14.0.`);
-        const npmVersion = deploySteps.find((candidate) => typeof candidate?.run === 'string' && /npm\s+(?:install|ci).*npm@|npm\s+install\s+-g\s+npm/i.test(candidate.run));
-        if (!npmVersion) errors.push(`${wfName}: ручной npm publish должен гарантировать npm CLI >=11.5.1 в deploy job.`);
+        const setupNodeStep = deploySteps[registrySetupIndex];
+        if (setupNodeStep?.with?.['package-manager-cache'] !== false) errors.push(`${wfName}: direct publish setup-node must set package-manager-cache: false.`);
+        if (setupNodeStep?.with?.cache !== undefined && setupNodeStep.with.cache !== '') errors.push(`${wfName}: direct publish setup-node must not enable dependency cache.`);
     }
 
     if (deployActionSteps.length === 1) {

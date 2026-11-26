@@ -119,6 +119,7 @@ jobs:
         with:
           node-version: "22.x"
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          package-cache: 'false'
           # npm-token НЕ указывается при Trusted Publishing
 
       - name: Create GitHub Release

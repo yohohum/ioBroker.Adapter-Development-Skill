@@ -6,6 +6,7 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import { load as loadYaml } from 'js-yaml';
 import { readVerifiedText, validateWorkflowActions, validateWorkflowFile } from '../scripts/lib/action-refs.mjs';
+import { effectivePermissions, isNpmCliPinSufficient, isStaticNodeRequirement } from '../scripts/lib/custom-release-workflow.mjs';
 
 const TEST_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname));
 const SKILL_ROOT = path.resolve(TEST_ROOT, '..');
@@ -856,6 +857,23 @@ test('Внутренний symlink разрешается только посл�
 
 console.log('\n=== Профили Action policy ===\n');
 
+test('custom permissions honor GitHub job-level replacement semantics', () => {
+  const errors = [];
+  assertEqual(effectivePermissions({ permissions: { 'id-token': 'write', contents: 'write' } }, {}).contents, 'write', 'job without map inherits workflow permissions');
+  assertEqual(effectivePermissions({ permissions: { contents: 'write' } }, { permissions: { 'id-token': 'write' } }).contents, undefined, 'job map replaces workflow map and omitted content permission is none');
+  assertEqual(effectivePermissions({ permissions: { 'id-token': 'write' } }, { permissions: {} })['id-token'], undefined, 'empty job map grants no inherited OIDC permission');
+  const unsupported = effectivePermissions({ permissions: 'write-all' }, { permissions: { 'id-token': 'write', contents: 'write' } }, errors);
+  assertEqual(errors.length > 0, true, 'write-all must fail closed');
+  assertEqual(unsupported['id-token'], 'write', 'explicit minimal publish-job map remains effective despite rejected top-level shorthand');
+});
+
+test('custom npm publishing runtime semver boundaries', () => {
+  for (const accepted of ['22.14.0', '24.0.0', '^22.14.0', '>=22.14.0']) assertEqual(isStaticNodeRequirement(accepted), true, `${accepted} must satisfy Node minimum`);
+  for (const rejected of ['22.0.0', '22.13.9', '${{ matrix.node }}', 'latest', 'lts/*', '22.x']) assertEqual(isStaticNodeRequirement(rejected), false, `${rejected} must not prove Node minimum`);
+  for (const accepted of ['npm install -g npm@11.5.1', 'npm install --global npm@12.0.0']) assertEqual(isNpmCliPinSufficient(accepted), true, `${accepted} must prove npm minimum`);
+  for (const rejected of ['npm install -g npm@10.0.0', 'npm install -g npm@11.5.0', 'npm install -g npm', 'npm install -g npm@latest']) assertEqual(isNpmCliPinSufficient(rejected), false, `${rejected} must fail npm pin validation`);
+});
+
 test('custom-approved tag-based OIDC workflow fixture — PASS', () => {
   const result = runRelease('release/custom-valid', 'custom-approved');
   assertExitCode(result, 0, 'Полный tag-based Trusted Publishing workflow должен пройти custom profile');
@@ -864,17 +882,22 @@ test('custom-approved tag-based OIDC workflow fixture — PASS', () => {
 for (const [label, mutateWorkflow, expected] of [
   ['branch-only trigger', (yaml) => yaml.replace("    tags:\n      - 'v*'\n", ''), 'push'],
   ['wrong tag format', (yaml) => yaml.replace("'v*'", "'main'"), 'vX.Y.Z'],
-  ['missing required tests', (yaml) => yaml.replace('      - run: npm run test:integration\n', '').replace('      - run: npm run test:package\n', ''), 'обязательными тестами'],
+  ['missing required tests', (yaml) => yaml.replace('      - run: npm run test:integration\n', '').replace('      - run: npm run test:package\n', ''), 'missing unconditional required tests'],
   ['deploy missing needs', (yaml) => yaml.replace('needs: [check-and-lint, adapter-tests]', 'needs: [check-and-lint]'), 'adapter-tests'],
-  ['skipped validation job', (yaml) => yaml.replace('  adapter-tests:\n', "  adapter-tests:\n    if: github.event_name == 'pull_request'\n"), 'может пропустить'],
-  ['deploy runs after failure', (yaml) => yaml.replace("if: startsWith(github.ref, 'refs/tags/v')", 'if: always()'), 'always()'],
-  ['npm long-lived token', (yaml) => yaml.replace("          github-token: ${{ secrets.GITHUB_TOKEN }}", "          github-token: ${{ secrets.GITHUB_TOKEN }}\n          npm-token: ${{ secrets.NPM_TOKEN }}"), 'npm token'],
+  ['skipped validation job', (yaml) => yaml.replace('  adapter-tests:\n', "  adapter-tests:\n    if: github.event_name == 'pull_request'\n"), 'не допускает job-level if'],
+  ['deploy runs after failure', (yaml) => yaml.replace("if: startsWith(github.ref, 'refs/tags/v')", 'if: always()'), 'must be exactly startsWith'],
+  ['npm long-lived token', (yaml) => yaml.replace('      - name: Publish with npm Trusted Publishing\n        run: npm publish', '      - name: Publish with npm Trusted Publishing\n        env:\n          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n        run: npm publish'), 'npm token reference is prohibited'],
   ['missing OIDC permission', (yaml) => yaml.replace('      id-token: write\n', ''), 'id-token: write'],
+  ['permissions replacement leaves OIDC none', (yaml) => yaml.replace('    permissions:\n      contents: write\n      id-token: write\n', '    permissions:\n      contents: write\n'), 'id-token: write'],
+  ['workflow write permissions do not merge into empty deploy map', (yaml) => yaml.replace('permissions:\n  contents: read\n', 'permissions:\n  contents: write\n  id-token: write\n').replace('    permissions:\n      contents: write\n      id-token: write\n', '    permissions: {}\n'), 'id-token: write'],
   ['excessive permission', (yaml) => yaml.replace('      id-token: write\n', '      id-token: write\n      packages: write\n'), 'избыточное permission'],
   ['unknown Action', (yaml) => yaml.replace('actions/checkout@v6', 'evil/action@v1'), 'evil/action'],
   ['floating Action ref', (yaml) => yaml.replace('actions/checkout@v6', 'actions/checkout@main'), 'неподтверждённый ref'],
-  ['duplicate publish path', (yaml) => yaml.replace('      - name: Publish with npm Trusted Publishing\n        uses: ioBroker/testing-action-deploy@v1', '      - name: Duplicate publish\n        run: npm publish --provenance\n      - name: Publish with npm Trusted Publishing\n        uses: ioBroker/testing-action-deploy@v1').replace('      - uses: ioBroker/testing-action-deploy@v1', '      - run: npm publish --provenance\n      - uses: ioBroker/testing-action-deploy@v1'), 'несколько publish step'],
+  ['duplicate publish path', (yaml) => yaml.replace('      - name: Publish with npm Trusted Publishing\n        run: npm publish', '      - name: Duplicate publish\n        run: npm publish\n      - name: Publish with npm Trusted Publishing\n        run: npm publish'), 'несколько publish step'],
   ['version guard missing', (yaml) => yaml.replace(/      - name: Verify release tag and package versions[\s\S]*?(?=      - uses: actions\/setup-node)/, ''), 'step проверки соответствия'],
+  ['validation job uses ref-looking skip condition', (yaml) => yaml.replace('  adapter-tests:\n', "  adapter-tests:\n    if: contains(github.ref, 'refs/tags/') && false\n"), 'не допускает job-level if'],
+  ['required test step skipped', (yaml) => yaml.replace('      - run: npm run test:integration', '      - if: false\n        run: npm run test:integration'), 'requires an unconditional npm run test:integration'],
+  ['required build step is continue-on-error', (yaml) => yaml.replace('      - run: npm run build', '      - continue-on-error: true\n        run: npm run build'), 'must not set continue-on-error: true'],
 ]) {
   test(`custom-approved ${label} — FAIL`, () => {
     const result = runCustomReleaseMutation({ mutateWorkflow });
@@ -890,6 +913,45 @@ test('custom-approved version mismatch между package и io-package — FAIL
   assertExitCode(result, 1, 'Несовпадающая версия пакета должна быть отклонена');
   assertContains(result.stdout + result.stderr, 'Version mismatch', 'Диагностика должна указывать на version mismatch');
 });
+
+for (const [label, nodeVersion, npmCommand, expected] of [
+  ['Node 22.0.0', '22.0.0', 'npm install -g npm@11.5.1', '>=22.14.0'],
+  ['Node 22.13.9', '22.13.9', 'npm install -g npm@11.5.1', '>=22.14.0'],
+  ['dynamic Node version', '${{ matrix.node-version }}', 'npm install -g npm@11.5.1', 'resolved Node.js version'],
+]) {
+  test(`custom-approved rejects ${label}`, () => {
+    const result = runCustomReleaseMutation({
+      mutateWorkflow: (yaml) => {
+        let changed = yaml
+          .replace("node-version: '24'\n          registry-url", `node-version: '${nodeVersion}'\n          registry-url`)
+          .replace('      - uses: ioBroker/testing-action-deploy@v1', '      - run: npm ci\n      - uses: ioBroker/testing-action-deploy@v1');
+        if (npmCommand !== 'none') changed = changed.replace('      - run: npm ci\n      - uses: ioBroker/testing-action-deploy@v1', `      - run: ${npmCommand}\n      - run: npm ci\n      - uses: ioBroker/testing-action-deploy@v1`);
+        return changed;
+      },
+    });
+    assertExitCode(result, 1, `${label} must fail trusted-publishing version checks`);
+    assertContains(result.stdout + result.stderr, expected, 'Expected version diagnostic');
+  });
+}
+
+for (const npmVersion of ['10.0.0', '11.5.0', 'unversioned']) {
+  test(`custom-approved rejects npm pin ${npmVersion}`, () => {
+    const npmCommand = npmVersion === 'unversioned' ? 'npm install -g npm' : `npm install -g npm@${npmVersion}`;
+    const result = runCustomReleaseMutation({ mutateWorkflow: (yaml) => yaml.replace('npm install --global npm@11.5.1', npmCommand) });
+    assertExitCode(result, 1, `npm ${npmVersion} must fail`);
+    assertContains(result.stdout + result.stderr, 'must pin npm CLI to a numeric version', 'Must explain npm pin failure');
+  });
+}
+
+for (const [label, nodeVersion, npmVersion] of [
+  ['minimum versions', '22.14.0', '11.5.1'],
+  ['newer versions', '24.0.0', '11.6.0'],
+]) {
+  test(`custom semver helpers accept ${label}`, () => {
+    assertEqual(isStaticNodeRequirement(nodeVersion), true, 'supported Node version should be accepted');
+    assertEqual(isNpmCliPinSufficient(`npm install -g npm@${npmVersion}`), true, 'supported npm pin should be accepted');
+  });
+}
 
 test('custom-approved запрещает publish вне deploy — FAIL', () => {
   const result = runCustomReleaseMutation({
@@ -954,18 +1016,51 @@ test('custom-approved не расширяет allowlist и не влияет н�
   }
 });
 
+function adaptStandardToCustom(workflow) {
+  let adapted = workflow
+    .replace("      - 'v[0-9]+.[0-9]+.[0-9]+'\n      - 'v[0-9]+.[0-9]+.[0-9]+-*'", "      - 'v*'")
+    .replace('    branches: [main, master]\n', '')
+    .replace('          TAG_VERSION="${GITHUB_REF_NAME#v}"\n', '          TAG_VERSION="${GITHUB_REF_NAME#v}"\n          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release tag"; exit 1; }\n');
+  const marker = '\n  deploy:\n';
+  const at = adapted.indexOf(marker);
+  if (at < 0) throw new Error('deploy job not found in standard fixture');
+  const head = adapted.slice(0, at + marker.length);
+  let deploy = adapted.slice(at + marker.length);
+  deploy = deploy.replace(
+    "      - name: Setup Node.js\n        uses: actions/setup-node@v6\n        with:\n          node-version: '22.x'\n          registry-url: 'https://registry.npmjs.org'\n",
+    "      - name: Setup Node.js\n        uses: actions/setup-node@v6\n        with:\n          node-version: '22.14.0'\n          registry-url: 'https://registry.npmjs.org'\n          package-manager-cache: false\n",
+  );
+  deploy = deploy.replace(
+    '      - name: Publish prerelease or stable release\n        uses: ioBroker/testing-action-deploy@v1\n        with:\n          node-version: "22.x"\n          github-token: ${{ secrets.GITHUB_TOKEN }}\n          package-cache: \'false\'\n          # npm-token НЕ указывается при Trusted Publishing',
+    [
+      '      - run: npm install -g npm@11.5.1',
+      '      - name: Check duplicate version',
+      '        shell: bash',
+      '        run: |',
+      '          set -euo pipefail',
+      '          PACKAGE_VERSION="$(node -p "require(\'./package.json\').version")"',
+      '          if npm view "$(node -p "require(\'./package.json\').name")@$PACKAGE_VERSION" version >/dev/null 2>&1; then',
+      '            echo "::error::Package version already exists"',
+      '            exit 1',
+      '          fi',
+      '      - name: Publish with OIDC',
+      '        run: npm publish',
+      '      - name: Create GitHub Release',
+      '        env:',
+      '          GH_TOKEN: ${{ github.token }}',
+      '        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag',
+    ].join('\n'),
+  );
+  return head + deploy;
+}
+
 test('custom-approved принимает только стандартный test-and-release workflow', () => {
   const source = requireFixture('release/correct');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'iob-skill-standard-custom-'));
   fs.cpSync(source, temp, { recursive: true });
   try {
     const workflowPath = path.join(temp, '.github/workflows/test-and-release.yml');
-    let workflow = fs.readFileSync(workflowPath, 'utf8');
-    workflow = workflow.replace("      - 'v[0-9]+.[0-9]+.[0-9]+'\n      - 'v[0-9]+.[0-9]+.[0-9]+-*'", "      - 'v*'");
-    workflow = workflow.replace('    branches: [main, master]\n', '');
-    workflow = workflow.replace('  permissions:\n    contents: read\n', '  permissions:\n    contents: read\n');
-    workflow = workflow.replace('          TAG_VERSION="${GITHUB_REF_NAME#v}"\n', '          TAG_VERSION="${GITHUB_REF_NAME#v}"\n          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release tag"; exit 1; }\n');
-    fs.writeFileSync(workflowPath, workflow);
+    fs.writeFileSync(workflowPath, adaptStandardToCustom(fs.readFileSync(workflowPath, 'utf8')));
     const result = runCommand('node', [RELEASE_PREFLIGHT, temp, '--profile=custom-approved', '--no-git-check']);
     assertExitCode(result, 0, 'Стандартный publish workflow после минимальной custom contract adaptation должен пройти');
   } finally {
@@ -979,11 +1074,7 @@ test('custom-approved поддерживает ручной релиз с тег
   fs.cpSync(source, temp, { recursive: true });
   try {
     const workflowPath = path.join(temp, '.github/workflows/test-and-release.yml');
-    let workflow = fs.readFileSync(workflowPath, 'utf8');
-    workflow = workflow.replace("      - 'v[0-9]+.[0-9]+.[0-9]+'\n      - 'v[0-9]+.[0-9]+.[0-9]+-*'", "      - 'v*'");
-    workflow = workflow.replace('    branches: [main, master]\n', '');
-    workflow = workflow.replace('          TAG_VERSION="${GITHUB_REF_NAME#v}"\n', '          TAG_VERSION="${GITHUB_REF_NAME#v}"\n          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::Invalid release tag"; exit 1; }\n');
-    fs.writeFileSync(workflowPath, workflow);
+    fs.writeFileSync(workflowPath, adaptStandardToCustom(fs.readFileSync(workflowPath, 'utf8')));
     const pkgPath = path.join(temp, 'package.json');
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     delete pkg.devDependencies;

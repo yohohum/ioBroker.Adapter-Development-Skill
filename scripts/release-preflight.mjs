@@ -30,12 +30,18 @@ checks, YAML duplicate-key detection, and tag-only publish condition.
 
 The custom profile requires a workflow that:
   - is triggered by push tags matching vX.Y.Z (prerelease suffix allowed);
-  - has build/lint and test jobs that run on the release tag;
-  - makes deploy depend on every validation job;
+  - has unconditional build/lint and test jobs (no if/continue-on-error) that
+    run on the release tag;
+  - makes deploy depend on every validation job with the condition exactly
+    startsWith(github.ref, 'refs/tags/v');
   - uses id-token: write and contents: write, and no long-lived npm token;
-  - publishes only through ioBroker/testing-action-deploy@v1 or one restricted
-    npm publish --provenance step;
-  - checks tag/package.json/io-package.json version consistency before publish.
+  - publishes through one direct npm publish step with a numeric npm CLI pin
+    >= 11.5.1 and Node.js >= 22.14.0, using setup-node with
+    package-manager-cache: false (ioBroker/testing-action-deploy@v1 is only
+    accepted with an explicit numeric npm-version >= 11.5.1 and
+    package-cache: 'false');
+  - checks tag/package.json/io-package.json version consistency and rejects an
+    already published version before publish.
 `);
     process.exit(0);
 }
@@ -202,7 +208,7 @@ function validateCustomWorkflow(wfPath) {
     reviewNeeded.push(...actionResult.reviews);
     try {
         const workflow = loadYaml(readVerifiedText(root, wfPath));
-        const result = validateCustomReleaseWorkflow(workflow, { wfName: path.relative(root, wfPath) });
+        const result = validateCustomReleaseWorkflow(workflow, { wfName: path.relative(root, wfPath), root });
         errors.push(...result.errors);
         warnings.push(...result.warnings);
         reviewNeeded.push(...result.reviews);

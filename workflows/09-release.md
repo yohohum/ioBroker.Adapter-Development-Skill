@@ -60,8 +60,8 @@ npm run release patch -- --dry
 2. Подготовь changelog в README: релизная запись должна отражать фактическое содержимое WIP, затем создай следующий WIP. Не архивируй текущий WIP в `CHANGELOG_OLD.md`.
 3. Проверь `.github/workflows/test-and-release.yml` и выполни `node /path/to/skill/scripts/release-preflight.mjs . --profile=custom-approved`. Для другого имени workflow укажи `--workflow=.github/workflows/<file>.yml`.
 4. Разрешённый trigger glob GitHub — только `v*` (это glob, не regex). Deploy обязан fail-closed проверить полное имя `vX.Y.Z` с допустимым prerelease suffix, сравнить его с `package.json` и `io-package.json`, и публиковать только при совпадении. Убедись, что тег указывает на проверенный commit; создай и запушь tag, без branch-triggered publication.
-5. GitHub Actions должны выполнить lint/build, adapter/package tests и другие проектные checks. Deploy зависит от всех таких jobs; skipped/failed prerequisite блокирует публикацию.
-6. Publish выполняется одним разрешённым механизмом: `ioBroker/testing-action-deploy@v1` без `npm-token` либо ограниченным `npm publish` шагом с OIDC и явной защитой от уже опубликованной версии. GitHub Actions Trusted Publishing автоматически создаёт provenance, флаг `--provenance` не нужен. Не добавляй второй publish path.
+5. GitHub Actions должны выполнить lint/build, adapter/package tests и другие проектные checks. Обязательные validation jobs и их ключевые steps — unconditional (без `if` и `continue-on-error`); Deploy зависит от всех таких jobs и использует условие ровно `startsWith(github.ref, 'refs/tags/v')`; skipped/failed prerequisite блокирует публикацию.
+6. Publish выполняется одним разрешённым механизмом: прямой `npm publish` с OIDC, numeric pin npm CLI `>= 11.5.1`, Node.js `>= 22.14.0` и явной защитой от уже опубликованной версии. `actions/setup-node` для публикации обязан задавать `registry-url: https://registry.npmjs.org` и `package-manager-cache: false`. `ioBroker/testing-action-deploy@v1` допускается только при явном numeric `npm-version >= 11.5.1` и `package-cache: 'false'`. GitHub Actions Trusted Publishing автоматически создаёт provenance, флаг `--provenance` не нужен. Не добавляй второй publish path.
 7. npm Trusted Publisher должен быть предварительно настроен владельцем пакета на npmjs.com: GitHub Actions, точные owner/organization, repository и имя workflow file (только filename, с `.yml`/`.yaml`); environment укажи только если workflow реально его использует. Workflow использует GitHub-hosted runner и имеет `id-token: write` только на deploy job. `contents: write` требуется только для GitHub Release.
 8. После успеха проверь версию через `npm view <package>@<version> version`, provenance (если доступно), GitHub Release/tag и release notes. Проверь, что опубликованная версия появилась в npm до включения её в news и финального repochecker.
 9. При ошибке до публикации исправь workflow/commit и создай новый тег с новой версией только если изменился пакет. После успешной публикации ту же версию повторно не публикуй: npm отвергает повторное создание уже опубликованной версии; восстановление выполняй новым patch-релизом. Не переписывай и не перемещай уже опубликованный тег.
@@ -72,7 +72,7 @@ npm run release patch -- --dry
 
 При использовании release-script он создаёт release commit/tag и push согласно своей конфигурации. При ручном релизе создай и запушь тег `vX.Y.Z` сам (см. 3.1). Standard profile использует workflow `test-and-release.yml` от `@iobroker/create-adapter`; custom profile может использовать только workflow, проходящий отдельную tag-based Trusted Publishing проверку.
 
-Не добавляй невалидируемый `npm-publish.yml` или произвольный publish step. Custom profile допускает один строго ограниченный `npm publish` через OIDC только при выполнении version, prerequisite, token, duplicate-version и release checks. Для GitHub Actions Trusted Publishing npm автоматически создаёт provenance; добавление `--provenance` не требуется.
+Не добавляй невалидируемый `npm-publish.yml` или произвольный publish step. Custom profile допускает только один строго ограниченный `npm publish` через OIDC при выполнении version, prerequisite, token, duplicate-version и release checks. Для GitHub Actions Trusted Publishing npm автоматически создаёт provenance; добавление `--provenance` не требуется.
 
 CI для веток/PR и publish по тегам разделяй: публикация не должна срабатывать на произвольный push в main.
 
@@ -87,15 +87,19 @@ Trusted Publishing не зависит от release-script, но требует 
 3. точное имя workflow file, только filename с расширением, без полного пути;
 4. environment — только если workflow использует GitHub environment.
 
-В `test-and-release.yml` НЕ указывай `npm-token`:
+В `test-and-release.yml` НЕ указывай `npm-token`. Минимальный publish-фрагмент для `custom-approved`:
 
 ```yaml
-- uses: ioBroker/testing-action-deploy@v1
+- uses: actions/setup-node@v6
   with:
-    node-version: "22.x"
-    github-token: ${{ secrets.GITHUB_TOKEN }}
-    # npm-token НЕ указывается при Trusted Publishing
+    node-version: '24'
+    registry-url: 'https://registry.npmjs.org'
+    package-manager-cache: false
+- run: npm install --global npm@11.5.1
+- run: npm publish
 ```
+
+Если используешь `ioBroker/testing-action-deploy@v1`, обязательно задай numeric `npm-version: "11.5.1"` (или выше), статический `node-version` не ниже `22.14.0` и `package-cache: 'false'`; без `npm-version` action ставит floating npm@11 и не проходит custom-approved.
 
 Требуй `id-token: write` для OIDC publish и `contents: write` для создания GitHub Release. Ограничивай write permissions deploy job, где возможно; остальные jobs должны использовать минимальные права (обычно `contents: read`). Для npm trusted publisher имя owner/repository/workflow case-sensitive и должно совпадать с настройкой на npmjs.com. Настройку выполняет владелец пакета в package settings → Trusted Publisher; npm требует успешный первый publish в течение двух дней после создания конфигурации.
 
