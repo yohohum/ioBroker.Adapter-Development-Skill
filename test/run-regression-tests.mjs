@@ -1936,7 +1936,7 @@ test('RT-41: guard запускается без semver в окружении а
   try {
     setupFixture(tempDir);
     const { mockDir, logPath } = createMockNpm(tempDir, 'not-found');
-    const result = runReleaseGuard(tempDir, { PATH: mockDir + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0' });
+    const result = runReleaseGuard(tempDir, { PATH: mockDir + ':' + process.env.PATH, GITHUB_REF_NAME: 'v1.0.0', NODE_PATH: '' });
     assertEqual(result.code, 0, 'Guard должен завершиться успешно без semver');
     const log = readNpmCallLog(logPath);
     assertEqual(log.length, 1, 'npm view должен быть вызван один раз');

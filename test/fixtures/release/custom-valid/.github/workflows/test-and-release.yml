@@ -72,8 +72,8 @@ jobs:
             }
 
             // Additional validation: no leading zeros in numeric prerelease identifiers
-            if (match[1]) {
-              const prereleaseParts = match[1].split(".");
+            if (match[4]) {
+              const prereleaseParts = match[4].split(".");
               for (const part of prereleaseParts) {
                 if (/^\d+$/.test(part) && part.length > 1 && part.startsWith("0")) {
                   process.exit(1);
